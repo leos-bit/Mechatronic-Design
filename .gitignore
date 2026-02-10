@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# Data & labels (large / generated)
+data/
+labels/
+
+# Models / weights
+*.pt
+*.onnx
+
+# Training outputs
+runs/
+trials/
+results/
+
+# Videos
+*.mov
+*.mp4
+
+# Local caches
+.cache/
