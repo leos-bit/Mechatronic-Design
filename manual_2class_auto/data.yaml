@@ -1,0 +1,6 @@
+path: manual_2class_auto
+train: images/train
+val: images/val
+names:
+  0: bottle
+  1: can

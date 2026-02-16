@@ -19,20 +19,22 @@ source /Users/leoshaw/Documents/VSCode/.venv314/bin/activate
 
 ## Run Detection
 ```bash
-python3 "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/code/belt_objects.py" \
-  --video "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/IMG_0985.mov" \
-  --yolo-model "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/trials/trial3/packdet-2class-detect/weights/best.pt" \
+python3 "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/code/belt_objects.py" \
+  --video "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/IMG_0985.mov" \
+  --yolo-model "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/trials/trial5-manual-auto/weights/best.pt" \
   --yolo-bottle-names "bottle" \
   --yolo-can-names "can" \
-  --yolo-conf 0.2 \
+  --yolo-conf 0.35 \
+  --track-lock-conf 0.6 \
+  --track-lock-min-hits 3 \
   --show
 ```
 
 ## Extract Frames for Labeling
 ```bash
-python3 "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/code/extract_frames.py" \
-  --video "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/IMG_0985.mov" \
-  --out "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/labels/labels_src" \
+python3 "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/code/extract_frames.py" \
+  --video "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/IMG_0985.mov" \
+  --out "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/labels/labels_src" \
   --count 200 \
   --start 0 \
   --step 5
@@ -41,11 +43,11 @@ python3 "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/code/extr
 ## Train (Detect on PackDet 2-class)
 ```bash
 /Users/leoshaw/Documents/VSCode/.venv314/bin/yolo detect train \
-  data="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/data/packdet_2class/data.yaml" \
-  model="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/models/yolov8n.pt" \
-  imgsz=640 epochs=10 batch=8 \
-  project="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/trials" \
-  name=packdet-2class-detect
+  data="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/packdet_2class/data.yaml" \
+  model="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/models/yolov8n.pt" \
+  imgsz=640 epochs=30 batch=8 \
+  project="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/trials" \
+  name=trial4
 ```
 
 ## Notes

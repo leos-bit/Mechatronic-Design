@@ -1,0 +1,6 @@
+path: /Users/leoshaw/Documents/VSCode/VS_CMU_S26/Mechatronic Design/packdet_2class
+train: images/Train
+val: images/Validation
+names:
+  0: bottle
+  1: can
