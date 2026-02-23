@@ -20,13 +20,16 @@ source /Users/leoshaw/Documents/VSCode/.venv314/bin/activate
 ## Run Detection
 ```bash
 python3 "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/code/belt_objects.py" \
-  --video "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/IMG_0985.mov" \
+  --video "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/IMG_1055.mov" \
   --yolo-model "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/trials/trial5-manual-auto/weights/best.pt" \
+  --tracker-type byte \
+  --byte-track-config "bytetrack.yaml" \
+  --homography-src "0,681;0,0;1079,681;1079,0" \
+  --homography-dst "-254,-152.4;-254,152.4;254,-152.4;254,152.4" \
+  --homography-units "mm" \
   --yolo-bottle-names "bottle" \
   --yolo-can-names "can" \
   --yolo-conf 0.35 \
-  --track-lock-conf 0.6 \
-  --track-lock-min-hits 3 \
   --show
 ```
 

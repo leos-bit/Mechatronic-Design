@@ -232,10 +232,103 @@ def run_yolo(model, frame_bgr, imgsz=640, conf=0.25, iou=0.7):
     return out
 
 
+def run_yolo_bytetrack(model, frame_bgr, imgsz=640, conf=0.25, iou=0.7, tracker_cfg="bytetrack.yaml"):
+    # Returns list of (x, y, w, h, label, conf, track_id)
+    results = model.track(
+        frame_bgr,
+        persist=True,
+        verbose=False,
+        imgsz=imgsz,
+        conf=conf,
+        iou=iou,
+        tracker=tracker_cfg,
+    )
+    if not results:
+        return []
+    det = results[0]
+    boxes = det.boxes
+    if boxes is None or len(boxes) == 0:
+        return []
+
+    out = []
+    ids = boxes.id if hasattr(boxes, "id") else None
+    for i in range(len(boxes)):
+        xyxy = boxes.xyxy[i].cpu().numpy().astype(int)
+        x1, y1, x2, y2 = xyxy.tolist()
+        w = max(0, x2 - x1)
+        h = max(0, y2 - y1)
+        cls_id = int(boxes.cls[i].item()) if boxes.cls is not None else -1
+        conf = float(boxes.conf[i].item()) if boxes.conf is not None else 0.0
+        track_id = int(ids[i].item()) if ids is not None else None
+
+        if cls_id >= 0 and cls_id < len(det.names):
+            label = det.names[cls_id]
+        else:
+            label = "unknown"
+
+        out.append((x1, y1, w, h, label, conf, track_id))
+    return out
+
+
 def parse_name_list(value):
     if not value:
         return []
     return [v.strip().lower() for v in value.split(",") if v.strip()]
+
+
+def parse_points(value):
+    # Format: "x1,y1;x2,y2;x3,y3;x4,y4" (4+ points).
+    if not value:
+        return np.zeros((0, 2), dtype=np.float32)
+    pairs = [p.strip() for p in value.split(";") if p.strip()]
+    pts = []
+    for pair in pairs:
+        xy = [v.strip() for v in pair.split(",")]
+        if len(xy) != 2:
+            raise ValueError(f"Invalid point '{pair}'. Use x,y pairs separated by ';'.")
+        pts.append((float(xy[0]), float(xy[1])))
+    return np.array(pts, dtype=np.float32)
+
+
+def load_homography_matrix(path):
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Homography file not found: {p}")
+    if p.suffix.lower() == ".npy":
+        h = np.load(str(p))
+    else:
+        h = np.loadtxt(str(p), dtype=np.float64)
+    h = np.array(h, dtype=np.float64)
+    if h.shape != (3, 3):
+        raise ValueError(f"Homography must be 3x3, got shape {h.shape}")
+    return h
+
+
+def build_homography(args):
+    if args.homography_matrix:
+        return load_homography_matrix(args.homography_matrix)
+
+    if args.homography_src or args.homography_dst:
+        if not args.homography_src or not args.homography_dst:
+            raise ValueError("Provide both --homography-src and --homography-dst.")
+        src = parse_points(args.homography_src)
+        dst = parse_points(args.homography_dst)
+        if len(src) != len(dst):
+            raise ValueError("Homography src/dst point counts must match.")
+        if len(src) < 4:
+            raise ValueError("Homography requires at least 4 point pairs.")
+        h, _ = cv2.findHomography(src, dst, method=0)
+        if h is None:
+            raise RuntimeError("Failed to compute homography from provided points.")
+        return h
+
+    return None
+
+
+def project_point(h, x, y):
+    pt = np.array([[[float(x), float(y)]]], dtype=np.float32)
+    mapped = cv2.perspectiveTransform(pt, h)
+    return float(mapped[0, 0, 0]), float(mapped[0, 0, 1])
 
 
 def map_yolo_label(raw_label, bottle_names, can_names):
@@ -264,6 +357,18 @@ def main():
                         help="YOLO confidence threshold")
     parser.add_argument("--yolo-iou", type=float, default=0.6,
                         help="YOLO NMS IoU threshold")
+    parser.add_argument("--tracker-type", choices=["simple", "byte"], default="simple",
+                        help="Tracking backend for YOLO detections")
+    parser.add_argument("--byte-track-config", default="bytetrack.yaml",
+                        help="Ultralytics tracker config path/name for ByteTrack")
+    parser.add_argument("--homography-matrix",
+                        help="Path to 3x3 homography matrix (.npy or text)")
+    parser.add_argument("--homography-src",
+                        help="Source pixel points as 'x1,y1;x2,y2;...'")
+    parser.add_argument("--homography-dst",
+                        help="Destination world points as 'X1,Y1;X2,Y2;...'")
+    parser.add_argument("--homography-units", default="world",
+                        help="Label for mapped coordinates (e.g., cm, mm)")
     parser.add_argument("--track-lock-conf", type=float, default=LOCK_CONF_THRESHOLD,
                         help="Track label lock confidence threshold")
     parser.add_argument("--track-lock-min-hits", type=int, default=LOCK_MIN_HITS,
@@ -289,12 +394,14 @@ def main():
     backsub = None
     if net is not None:
         backsub = cv2.createBackgroundSubtractorMOG2(history=300, varThreshold=50, detectShadows=False)
+    use_byte_track = (yolo is not None) and (args.tracker_type == "byte") and (not args.no_track)
+    homography = build_homography(args)
     tracker = (
         SimpleTracker(
             lock_conf_threshold=args.track_lock_conf,
             lock_min_hits=args.track_lock_min_hits,
         )
-        if not args.no_track
+        if (not args.no_track and not use_byte_track)
         else None
     )
     bottle_names = parse_name_list(args.yolo_bottle_names)
@@ -317,15 +424,30 @@ def main():
             results = []
 
             if yolo is not None:
-                detections = run_yolo(
-                    yolo,
-                    frame,
-                    imgsz=args.yolo_imgsz,
-                    conf=args.yolo_conf,
-                    iou=args.yolo_iou,
-                )
+                if use_byte_track:
+                    detections = run_yolo_bytetrack(
+                        yolo,
+                        frame,
+                        imgsz=args.yolo_imgsz,
+                        conf=args.yolo_conf,
+                        iou=args.yolo_iou,
+                        tracker_cfg=args.byte_track_config,
+                    )
+                else:
+                    detections = run_yolo(
+                        yolo,
+                        frame,
+                        imgsz=args.yolo_imgsz,
+                        conf=args.yolo_conf,
+                        iou=args.yolo_iou,
+                    )
                 mapped = []
-                for x, y, w, h, raw_label, conf in detections:
+                for det_item in detections:
+                    if use_byte_track:
+                        x, y, w, h, raw_label, conf, tid = det_item
+                    else:
+                        x, y, w, h, raw_label, conf = det_item
+                        tid = None
                     if w == 0 or h == 0:
                         continue
                     if not is_reasonable_bbox(w, h, frame.shape):
@@ -342,12 +464,16 @@ def main():
                         circularity = 0.0 if perim == 0 else (4 * np.pi * area) / (perim * perim)
                     cx = x + w // 2
                     cy = y + h // 2
-                    mapped.append((cx, cy, label, conf))
+                    if use_byte_track:
+                        mapped.append((cx, cy, label, conf, tid))
+                    else:
+                        mapped.append((cx, cy, label, conf))
 
                     if args.show:
                         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                         cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
-                        cv2.putText(frame, f"{label} {conf:.2f}", (x, y - 5),
+                        track_tag = f" id={tid}" if tid is not None else ""
+                        cv2.putText(frame, f"{label} {conf:.2f}{track_tag}", (x, y - 5),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
                         if args.debug_features:
                             text = f"asp={aspect:.2f} circ~={circularity:.2f}"
@@ -397,19 +523,38 @@ def main():
 
             if results:
                 for item in results:
-                    if tracker is not None:
+                    if tracker is not None or use_byte_track:
                         cx, cy, label, conf, tid = item
                     else:
                         cx, cy, label, conf = item
                         tid = None
+                    world_xy = project_point(homography, cx, cy) if homography is not None else None
                     if conf > 0:
                         track_msg = f" track={tid}" if tid is not None else ""
-                        print(
-                            f"frame={frame_idx} centroid=({cx},{cy}) class={label} conf={conf:.2f}{track_msg}"
+                        world_msg = (
+                            f" {args.homography_units}=({world_xy[0]:.2f},{world_xy[1]:.2f})"
+                            if world_xy is not None
+                            else ""
                         )
+                        print(f"frame={frame_idx} centroid=({cx},{cy}) class={label} conf={conf:.2f}{track_msg}{world_msg}")
                     else:
                         track_msg = f" track={tid}" if tid is not None else ""
-                        print(f"frame={frame_idx} centroid=({cx},{cy}) class={label}{track_msg}")
+                        world_msg = (
+                            f" {args.homography_units}=({world_xy[0]:.2f},{world_xy[1]:.2f})"
+                            if world_xy is not None
+                            else ""
+                        )
+                        print(f"frame={frame_idx} centroid=({cx},{cy}) class={label}{track_msg}{world_msg}")
+                    if args.show and world_xy is not None:
+                        cv2.putText(
+                            frame,
+                            f"{args.homography_units}=({world_xy[0]:.1f},{world_xy[1]:.1f})",
+                            (cx + 6, cy + 14),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.42,
+                            (0, 255, 255),
+                            1,
+                        )
 
         if args.show:
             cv2.imshow("belt", frame)
