@@ -82,6 +82,11 @@ class SBusStatus:
         self.fail_safe = False
 
 class Board:
+    BUS_SERVO_POSITION_MIN = 0
+    BUS_SERVO_POSITION_MAX = 1000
+    BUS_SERVO_ANGLE_MIN_DEG = 0.0
+    BUS_SERVO_ANGLE_MAX_DEG = 240.0
+
     buttons_map = {
             'GAMEPAD_BUTTON_MASK_L2':        0x0001,
             'GAMEPAD_BUTTON_MASK_R2':        0x0002,
@@ -425,6 +430,69 @@ class Board:
             data.extend(struct.pack("<BH", i[0], i[1]))
         self.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, data)
 
+    def bus_servo_position_to_angle(self, position, position_min=None, position_max=None, angle_min_deg=None, angle_max_deg=None):
+        position_min = self.BUS_SERVO_POSITION_MIN if position_min is None else position_min
+        position_max = self.BUS_SERVO_POSITION_MAX if position_max is None else position_max
+        angle_min_deg = self.BUS_SERVO_ANGLE_MIN_DEG if angle_min_deg is None else angle_min_deg
+        angle_max_deg = self.BUS_SERVO_ANGLE_MAX_DEG if angle_max_deg is None else angle_max_deg
+        if position_max <= position_min:
+            raise ValueError("position_max must be greater than position_min")
+        ratio = (float(position) - position_min) / (position_max - position_min)
+        return angle_min_deg + ratio * (angle_max_deg - angle_min_deg)
+
+    def bus_servo_angle_to_position(self, angle_deg, position_min=None, position_max=None, angle_min_deg=None, angle_max_deg=None, clamp=True):
+        position_min = self.BUS_SERVO_POSITION_MIN if position_min is None else position_min
+        position_max = self.BUS_SERVO_POSITION_MAX if position_max is None else position_max
+        angle_min_deg = self.BUS_SERVO_ANGLE_MIN_DEG if angle_min_deg is None else angle_min_deg
+        angle_max_deg = self.BUS_SERVO_ANGLE_MAX_DEG if angle_max_deg is None else angle_max_deg
+        if angle_max_deg <= angle_min_deg:
+            raise ValueError("angle_max_deg must be greater than angle_min_deg")
+        ratio = (float(angle_deg) - angle_min_deg) / (angle_max_deg - angle_min_deg)
+        position = round(position_min + ratio * (position_max - position_min))
+        if clamp:
+            position = min(position_max, max(position_min, position))
+        return int(position)
+
+    def bus_servo_set_angle(self, duration, angles_deg, position_min=None, position_max=None, angle_min_deg=None, angle_max_deg=None, clamp=True):
+        positions = []
+        for servo_id, angle_deg in angles_deg:
+            position = self.bus_servo_angle_to_position(
+                angle_deg,
+                position_min=position_min,
+                position_max=position_max,
+                angle_min_deg=angle_min_deg,
+                angle_max_deg=angle_max_deg,
+                clamp=clamp,
+            )
+            positions.append([servo_id, position])
+        self.bus_servo_set_position(duration, positions)
+
+    def bus_servo_read_angle(self, servo_id, position_min=None, position_max=None, angle_min_deg=None, angle_max_deg=None):
+        position = self.bus_servo_read_position(servo_id)
+        if position is None:
+            return None
+        return self.bus_servo_position_to_angle(
+            position[0],
+            position_min=position_min,
+            position_max=position_max,
+            angle_min_deg=angle_min_deg,
+            angle_max_deg=angle_max_deg,
+        )
+
+    def bus_servo_set_position_345(self, duration, pos3, pos4, pos5):
+        self.bus_servo_set_position(duration, [[3, int(pos3)], [4, int(pos4)], [5, int(pos5)]])
+
+    def bus_servo_set_angle_345(self, duration, angle3_deg, angle4_deg, angle5_deg, position_min=None, position_max=None, angle_min_deg=None, angle_max_deg=None, clamp=True):
+        self.bus_servo_set_angle(
+            duration,
+            [[3, angle3_deg], [4, angle4_deg], [5, angle5_deg]],
+            position_min=position_min,
+            position_max=position_max,
+            angle_min_deg=angle_min_deg,
+            angle_max_deg=angle_max_deg,
+            clamp=clamp,
+        )
+
     def bus_servo_read_and_unpack(self, servo_id, cmd, unpack):
         with self.servo_read_lock:
             self.buf_write(PacketFunction.PACKET_FUNC_BUS_SERVO, [cmd, servo_id])
@@ -601,4 +669,3 @@ if __name__ == "__main__":
             time.sleep(0.001)
         except KeyboardInterrupt:
             break
-

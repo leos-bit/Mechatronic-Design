@@ -1,0 +1,9 @@
+[Unit]
+Description=Install TechNexion Camera Drivers
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/sh -c '/sbin/insmod /lib/modules/KERNEL_VER/kernel/drivers/media/i2c/tevs.ko.xz'
+
+[Install]
+WantedBy=multi-user.target

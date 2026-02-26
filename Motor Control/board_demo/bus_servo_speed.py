@@ -39,10 +39,10 @@ def get_bus_servo_id(board):
 if __name__ == '__main__':
     servo_ids = set()
     while True:
-        if len(servo_ids) < 3:
-            servo_id = get_bus_servo_id(board)
-            if servo_id is not None:
-                servo_ids.add(get_bus_servo_id(board))
+        # if len(servo_ids) < 3:
+        #     servo_id = get_bus_servo_id(board)
+        #     if servo_id is not None:
+        #         servo_ids.add(get_bus_servo_id(board))
                 
         # for val in servo_ids:
         #     board.bus_servo_set_position(1, [[val, 0]])
@@ -52,7 +52,7 @@ if __name__ == '__main__':
         #     board.bus_servo_stop([val])
         #     time.sleep(1)
 
-        board.bus_servo_set_offset(1, [[5, 1000],[4, 500],[3, 0]])
+        board.bus_servo_set_offset(5, 127)
         time.sleep(2)
         
         if not start:

@@ -1,0 +1,7 @@
+import pyvizionsdk
+
+# Test the library import
+pyvizionsdk.HelloVizionSDK()
+# Output:
+# Hello VizionSDK!
+# Version: {VizionSDK Version}

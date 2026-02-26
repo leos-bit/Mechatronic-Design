@@ -37,7 +37,6 @@ def bus_servo_test(board):
     temp = board.bus_servo_read_temp(servo_id)
     position = board.bus_servo_read_position(servo_id)
     # 输出舵机状态
-    if servo_id == 4:  
         print("id:", servo_id)
         print('vin:', vin)
         print('temp:',temp)
@@ -48,5 +47,6 @@ if __name__ == '__main__':
     try:
         while start:
             bus_servo_test(board)
+            time.sleep(0.01)
     except KeyboardInterrupt:
         print('强行退出')
