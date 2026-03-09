@@ -1,0 +1,69 @@
+classdef animation
+
+    properties
+        top_triangle_plot 
+        bottom_triangle_plot 
+        Arm1_plot 
+        Arm2_plot 
+        Arm3_plot
+    end
+    methods
+       function [] = Animate(obj,theta1_vec,theta2_vec,theta3_vec)
+    % THETA IN DEGREES
+
+    for index = 1:size(theta1_vec,2)
+        % get end position for each set of thetas with forward kinematics:
+        EndPosn(:,:,index) = FK(theta1_vec(index),theta2_vec(index),theta3_vec(index));
+
+        % get drawing vectors for plot for each set of thetas 
+        [topTriangle(index),bottomTriangle(index),Arm1(index),Arm2(index),Arm3(index)] = GetDrawingVectors(theta1_vec(index),theta2_vec(index),theta3_vec(index),EndPosn(:,:,index));
+    end
+
+    % initialize plot
+    clc
+    figure(2), clf, hold on
+    axis equal
+    axis ([-500 500 -500 500 -1000 300])
+    view(-290, 35)
+    grid on, box on
+    %title('\bfForward Kinematics')
+    xlabel('x (mm)'), ylabel('y (mm)'), zlabel('z (mm)')
+
+    % Draw first position:
+    obj.top_triangle_plot = plot3([topTriangle(1).XData],[topTriangle(1).YData],[topTriangle(1).ZData],'.k-', 'LineWidth', 1, 'MarkerSize', 1);
+    obj.bottom_triangle_plot = plot3([bottomTriangle(1).XData],[bottomTriangle(1).YData],[bottomTriangle(1).ZData],'.k-', 'LineWidth', 1, 'MarkerSize', 1);
+
+    obj.Arm1_plot = plot3([Arm1(1).XData],[Arm1(1).YData], [Arm1(1).ZData],'.k-', 'LineWidth', 1, 'MarkerSize', 10);
+    obj.Arm2_plot = plot3([Arm2(1).XData],[Arm2(1).YData], [Arm2(1).ZData],'.k-', 'LineWidth', 1, 'MarkerSize', 10);
+    obj.Arm3_plot = plot3([Arm3(1).XData],[Arm3(1).YData], [Arm3(1).ZData],'.k-', 'LineWidth', 1, 'MarkerSize', 10);
+
+    % now animate for all posn in theta vectors
+    if size(thet)
+    for tx = 1:size(theta1_vec,2)
+        % update plots 
+        obj.Arm1_plot.XData = Arm1(tx).XData;
+        obj.Arm1_plot.YData = Arm1(tx).YData;
+        obj.Arm1_plot.ZData = Arm1(tx).ZData;
+
+        obj.Arm2_plot.XData = Arm2(tx).XData;
+        obj.Arm2_plot.YData = Arm2(tx).YData;
+        obj.Arm2_plot.ZData = Arm2(tx).ZData;
+
+        obj.Arm3_plot.XData = Arm3(tx).XData;
+        obj.Arm3_plot.YData = Arm3(tx).YData;
+        obj.Arm3_plot.ZData = Arm3(tx).ZData;
+
+        obj.bottom_triangle_plot.XData = bottomTriangle(tx).XData;
+        obj.bottom_triangle_plot.YData = bottomTriangle(tx).YData;
+        obj.bottom_triangle_plot.ZData = bottomTriangle(tx).ZData;
+
+        drawnow
+    end
+    hold off
+       end
+    end
+
+
+
+    
+end
