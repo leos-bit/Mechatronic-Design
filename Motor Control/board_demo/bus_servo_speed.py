@@ -44,15 +44,15 @@ if __name__ == '__main__':
         #     if servo_id is not None:
         #         servo_ids.add(get_bus_servo_id(board))
                 
-        # for val in servo_ids:
-        #     board.bus_servo_set_position(1, [[val, 0]])
-        #     time.sleep(0.1)
-        #     board.bus_servo_set_position(2, [[val, 1000]])
-        #     time.sleep(1)
-        #     board.bus_servo_stop([val])
-        #     time.sleep(1)
+        for val in servo_ids:
+            board.bus_servo_set_position(1, [[val, 0]])
+            time.sleep(0.1)
+            board.bus_servo_set_position(2, [[val, 1000]])
+            time.sleep(1)
+            board.bus_servo_stop([val])
+            time.sleep(1)
 
-        board.bus_servo_set_offset(5, 127)
+        # board.bus_servo_set_offset(5, 127)
         time.sleep(2)
         
         if not start:

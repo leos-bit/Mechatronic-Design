@@ -48,7 +48,7 @@ def initialzeCamera():
     result = pyvizionsdk.VxStartStreaming(camera)
     return camera, target_format
 
-def takePhoto(camera, target_format, destination = "/home/collector/Documents/deltaArmControl/Mechatronic-Design/cameraCode/photos/", name = "default.jpg"):
+def takePhoto(camera, target_format, save_photo = False, destination = "/home/collector/Documents/deltaArmControl/Mechatronic-Design/cameraCode/photos/", name = "default.jpg"):
     # Then get image
     result, image_data = pyvizionsdk.VxGetImage(camera, 1000, target_format)
 
@@ -64,8 +64,12 @@ def takePhoto(camera, target_format, destination = "/home/collector/Documents/de
 
         # Convert UYVY → BGR
         bgr = cv2.cvtColor(uyvy, cv2.COLOR_YUV2BGR_UYVY)
-
-        cv2.imwrite(destination + name, bgr)
+        
+        if not save_photo:
+            return bgr
+        else:
+            cv2.imwrite(destination + name, bgr)
+            return bgr
         # print("Photo saved (converted)!")
 
 def closeCamera(camera):
@@ -74,7 +78,7 @@ def closeCamera(camera):
 
 def main():
     camera, target_format = initialzeCamera()
-    takePhoto(camera, target_format)
+    takePhoto(camera, target_format, save_photo=True)
     closeCamera(camera)
 
 if __name__ == "__main__":
