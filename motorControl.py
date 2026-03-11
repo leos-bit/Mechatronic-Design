@@ -4,8 +4,8 @@ import sys
 import os
 
 # Add path to access ros_robot_controller_sdk and takePhoto
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + 'Motor Control/board_demo')
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + 'cameraCode')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/Motor Control/board_demo')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/cameraCode')
 
 import ros_robot_controller_sdk as rrc
 import takePhoto

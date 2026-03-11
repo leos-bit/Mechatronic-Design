@@ -22,6 +22,9 @@ def threeSpheres(tup):
     a1v, a2v, a3v, r1, r2, r3 = tup
     valid = True
     if a3v[2] == a2v[2] and a3v[2] == a1v[2]:
+        x1, y1, z1 = a1v
+        x2, y2, z2 = a2v
+        x3, y3, z3 = a3v
         a = 2*(x3 - x1)
         b = 2*(y3 - y1)
         c = r1**2 - r3**2 - x1**2 - y1**2 + x3**2 + y3**2
@@ -113,9 +116,9 @@ def decider(theta1_plus,theta1_minus,theta2_plus,theta2_minus,theta3_plus,theta3
     for t1 in theta1s:
         for t2 in theta2s:
             for t3 in theta3s:
-                print(t1, t2, t3)
+                # print(t1, t2, t3)
                 solution, isValid = fk(t1, t2, t3)
-                print(solution, isValid)
+                # print(solution, isValid)
                 if isValid and -90 < t1 < 90 and -90 < t2 < 90 and -90 < t3 < 90: 
                     return t1, t2, t3
     return None
