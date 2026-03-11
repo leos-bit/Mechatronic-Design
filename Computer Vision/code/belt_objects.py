@@ -1,34 +1,38 @@
 #!/usr/bin/env python3
 import argparse
-import cv2
-import numpy as np
 from pathlib import Path
 
-CLASSES = ["bottle", "can"]
+import cv2
+import numpy as np
 
-# Heuristic thresholds (tune these for your setup).
+CLASSES = ["bottle", "can", "six_pack"]
+
 MIN_AREA = 500
-SIX_PACK_AREA = 2000
-SIX_PACK_ASPECT_MIN = 1.2
-SIX_PACK_EXTENT_MIN = 0.5
-SIX_PACK_SOLIDITY_MIN = 0.6
-
-BOTTLE_ELONGATION_MIN = 2.0
-BOTTLE_ASPECT_MAX = 0.6
-
-CAN_CIRCULARITY_MIN = 0.75 
-CAN_ELONGATION_MAX = 1.2
-
 TRACK_MAX_DISTANCE = 50
 TRACK_MAX_AGE = 12
-
-# Sanity filters to avoid classifying the whole belt.
 MAX_AREA_FRACTION = 0.4
 MAX_DIM_FRACTION = 0.8
-
-# Lock label per object only after repeated agreement.
 LOCK_CONF_THRESHOLD = 0.6
 LOCK_MIN_HITS = 3
+CENTROID_MASK_MIN_AREA = 0.08
+CENTROID_BORDER_FRACTION = 0.12
+CENTROID_THRESHOLD_BIAS = 10
+SIX_PACK_MIN_AREA_FRACTION = 0.025
+SIX_PACK_ASPECT_MIN = 1.2
+
+
+def parse_name_list(value):
+    if not value:
+        return []
+    return [v.strip().lower() for v in value.split(",") if v.strip()]
+
+
+def parse_class_aliases(bottle_names, can_names, six_pack_names):
+    return {
+        "bottle": parse_name_list(bottle_names),
+        "can": parse_name_list(can_names),
+        "six_pack": parse_name_list(six_pack_names),
+    }
 
 
 def load_classifier(model_path):
@@ -39,7 +43,6 @@ def load_classifier(model_path):
 
 
 def classify_with_model(net, roi_bgr):
-    # Assumes a standard image classifier outputting logits over CLASSES.
     blob = cv2.dnn.blobFromImage(roi_bgr, scalefactor=1 / 255.0, size=(224, 224), swapRB=True)
     net.setInput(blob)
     out = net.forward()
@@ -80,29 +83,6 @@ def compute_shape_features(contour):
     }
 
 
-def classify_heuristic(contour):
-    # Shape-only heuristic (tune thresholds per video).
-    features = compute_shape_features(contour)
-    area = features["area"]
-    aspect = features["aspect"]
-    extent = features["extent"]
-    solidity = features["solidity"]
-    circularity = features["circularity"]
-    elongation = features["elongation"]
-
-    # Bottle-like shape: tall/elongated.
-    bottle_like = elongation > BOTTLE_ELONGATION_MIN and aspect < BOTTLE_ASPECT_MAX
-
-    if bottle_like:
-        return "bottle"
-
-    # Can: compact and round.
-    if circularity > CAN_CIRCULARITY_MIN and elongation < CAN_ELONGATION_MAX:
-        return "can"
-
-    return "can"
-
-
 class SimpleTracker:
     def __init__(
         self,
@@ -119,7 +99,6 @@ class SimpleTracker:
         self.tracks = {}
 
     def update(self, detections, frame_idx):
-        # detections: list of (cx, cy, label, conf)
         results = []
         used_tracks = set()
 
@@ -142,19 +121,19 @@ class SimpleTracker:
                 if tr.get("locked_label") is None:
                     tr["hits"] += 1
                     tr["labels"][label] = tr["labels"].get(label, 0) + 1
+                    tr["label_scores"][label] = tr["label_scores"].get(label, 0.0) + conf
                     tr["label_max_conf"][label] = max(tr["label_max_conf"].get(label, 0.0), conf)
                     tr["last_label"] = label
-                    stable, stable_count = max(tr["labels"].items(), key=lambda kv: kv[1])
-                    stable_ratio = stable_count / max(tr["hits"], 1)
+                    stable, _, stable_ratio = choose_stable_label(tr)
                     stable_conf = tr["label_max_conf"].get(stable, 0.0)
                     if (
                         tr["hits"] >= self.lock_min_hits
-                        and stable_ratio >= 0.7
+                        and stable_ratio >= 0.65
                         and stable_conf >= self.lock_conf_threshold
                     ):
                         tr["locked_label"] = stable
                 used_tracks.add(best_id)
-                stable = tr.get("locked_label") or max(tr["labels"].items(), key=lambda kv: kv[1])[0]
+                stable = tr.get("locked_label") or choose_stable_label(tr)[0]
                 results.append((cx, cy, stable, conf, best_id))
             else:
                 tid = self.next_id
@@ -165,6 +144,7 @@ class SimpleTracker:
                     "last_seen": frame_idx,
                     "hits": 1,
                     "labels": {label: 1},
+                    "label_scores": {label: conf},
                     "label_max_conf": {label: conf},
                     "last_label": label,
                     "locked_label": None,
@@ -177,6 +157,18 @@ class SimpleTracker:
             del self.tracks[tid]
 
         return results
+
+
+def choose_stable_label(track):
+    score_items = track.get("label_scores", {})
+    if not score_items:
+        stable, stable_count = max(track["labels"].items(), key=lambda kv: kv[1])
+        stable_ratio = stable_count / max(track.get("hits", 1), 1)
+        return stable, float(stable_count), stable_ratio
+    stable, stable_score = max(score_items.items(), key=lambda kv: (kv[1], track["labels"].get(kv[0], 0)))
+    total_score = max(sum(score_items.values()), 1e-6)
+    stable_ratio = stable_score / total_score
+    return stable, stable_score, stable_ratio
 
 
 def is_reasonable_bbox(w, h, frame_shape):
@@ -192,6 +184,94 @@ def is_reasonable_bbox(w, h, frame_shape):
     return True
 
 
+def refine_centroid(frame_bgr, x, y, w, h, threshold_bias=CENTROID_THRESHOLD_BIAS):
+    x1 = max(0, int(x))
+    y1 = max(0, int(y))
+    x2 = min(frame_bgr.shape[1], int(x + w))
+    y2 = min(frame_bgr.shape[0], int(y + h))
+    roi = frame_bgr[y1:y2, x1:x2]
+    if roi.size == 0:
+        return x + w // 2, y + h // 2, None
+
+    rh, rw = roi.shape[:2]
+    border = max(1, int(round(min(rh, rw) * CENTROID_BORDER_FRACTION)))
+    border = min(border, max(1, min(rh, rw) // 3))
+
+    border_mask = np.zeros((rh, rw), dtype=np.uint8)
+    border_mask[:border, :] = 255
+    border_mask[-border:, :] = 255
+    border_mask[:, :border] = 255
+    border_mask[:, -border:] = 255
+
+    border_pixels = roi[border_mask == 255]
+    if border_pixels.size == 0:
+        return x + w // 2, y + h // 2, None
+
+    bg_color = np.median(border_pixels.reshape(-1, 3), axis=0).astype(np.float32)
+    diff = np.linalg.norm(roi.astype(np.float32) - bg_color, axis=2)
+    diff = np.clip(diff, 0, 255).astype(np.uint8)
+    diff = cv2.GaussianBlur(diff, (5, 5), 0)
+
+    otsu_threshold, _ = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    applied_threshold = int(np.clip(otsu_threshold + threshold_bias, 0, 255))
+    _, mask = cv2.threshold(diff, applied_threshold, 255, cv2.THRESH_BINARY)
+
+    kernel_size = max(3, int(round(min(rh, rw) * 0.08)))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return x + w // 2, y + h // 2, None
+
+    box_area = float(max(rw * rh, 1))
+    roi_center = np.array([rw / 2.0, rh / 2.0], dtype=np.float32)
+    best_contour = None
+    best_score = None
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < box_area * CENTROID_MASK_MIN_AREA:
+            continue
+        moments = cv2.moments(contour)
+        if moments["m00"] <= 0:
+            continue
+        cx = moments["m10"] / moments["m00"]
+        cy = moments["m01"] / moments["m00"]
+        dist = float(np.hypot(cx - roi_center[0], cy - roi_center[1]))
+        score = (dist, -area)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_contour = contour
+
+    if best_contour is None:
+        return x + w // 2, y + h // 2, None
+
+    moments = cv2.moments(best_contour)
+    if moments["m00"] <= 0:
+        return x + w // 2, y + h // 2, None
+
+    cx = int(round(x1 + (moments["m10"] / moments["m00"])))
+    cy = int(round(y1 + (moments["m01"] / moments["m00"])))
+    contour_global = best_contour + np.array([[[x1, y1]]], dtype=np.int32)
+    return cx, cy, contour_global
+
+
+def classify_six_pack_from_geometry(label, w, h, frame_shape, min_area_fraction, min_aspect):
+    if label != "can":
+        return label
+    fh, fw = frame_shape[:2]
+    if fh <= 0 or fw <= 0:
+        return label
+    area_fraction = (w * h) / float(fw * fh)
+    aspect = w / max(h, 1)
+    if area_fraction >= min_area_fraction and aspect >= min_aspect:
+        return "six_pack"
+    return label
+
+
 def load_yolo(model_path):
     if model_path is None:
         return None
@@ -205,7 +285,6 @@ def load_yolo(model_path):
 
 
 def run_yolo(model, frame_bgr, imgsz=640, conf=0.25, iou=0.7):
-    # Returns list of (x, y, w, h, label, conf)
     results = model.predict(frame_bgr, verbose=False, imgsz=imgsz, conf=conf, iou=iou)
     if not results:
         return []
@@ -233,7 +312,6 @@ def run_yolo(model, frame_bgr, imgsz=640, conf=0.25, iou=0.7):
 
 
 def run_yolo_bytetrack(model, frame_bgr, imgsz=640, conf=0.25, iou=0.7, tracker_cfg="bytetrack.yaml"):
-    # Returns list of (x, y, w, h, label, conf, track_id)
     results = model.track(
         frame_bgr,
         persist=True,
@@ -270,14 +348,7 @@ def run_yolo_bytetrack(model, frame_bgr, imgsz=640, conf=0.25, iou=0.7, tracker_
     return out
 
 
-def parse_name_list(value):
-    if not value:
-        return []
-    return [v.strip().lower() for v in value.split(",") if v.strip()]
-
-
 def parse_points(value):
-    # Format: "x1,y1;x2,y2;x3,y3;x4,y4" (4+ points).
     if not value:
         return np.zeros((0, 2), dtype=np.float32)
     pairs = [p.strip() for p in value.split(";") if p.strip()]
@@ -331,12 +402,11 @@ def project_point(h, x, y):
     return float(mapped[0, 0, 0]), float(mapped[0, 0, 1])
 
 
-def map_yolo_label(raw_label, bottle_names, can_names):
-    l = raw_label.lower()
-    if any(name in l for name in bottle_names):
-        return "bottle"
-    if any(name in l for name in can_names):
-        return "can"
+def map_yolo_label(raw_label, class_aliases):
+    label = str(raw_label).lower()
+    for canonical, aliases in class_aliases.items():
+        if any(alias in label for alias in aliases):
+            return canonical
     return "unknown"
 
 
@@ -351,6 +421,8 @@ def main():
                         help="Comma-separated substrings for YOLO bottle class names")
     parser.add_argument("--yolo-can-names", default="can",
                         help="Comma-separated substrings for YOLO can class names")
+    parser.add_argument("--yolo-six-pack-names", default="6-pack,six-pack,six_pack,6pack",
+                        help="Comma-separated substrings for YOLO six-pack class names")
     parser.add_argument("--yolo-imgsz", type=int, default=640,
                         help="YOLO inference image size")
     parser.add_argument("--yolo-conf", type=float, default=0.35,
@@ -373,6 +445,16 @@ def main():
                         help="Track label lock confidence threshold")
     parser.add_argument("--track-lock-min-hits", type=int, default=LOCK_MIN_HITS,
                         help="Minimum matched detections before locking a track label")
+    parser.add_argument("--centroid-mode", choices=["bbox", "refined"], default="refined",
+                        help="Use bbox center or a refined silhouette centroid inside each detection")
+    parser.add_argument("--centroid-threshold-bias", type=int, default=CENTROID_THRESHOLD_BIAS,
+                        help="Threshold bias for centroid refinement mask extraction")
+    parser.add_argument("--enable-six-pack-heuristic", action="store_true",
+                        help="Promote large, wide can detections to six_pack when using a 2-class model")
+    parser.add_argument("--six-pack-min-area-fraction", type=float, default=SIX_PACK_MIN_AREA_FRACTION,
+                        help="Minimum bbox area fraction of the frame to promote can -> six_pack")
+    parser.add_argument("--six-pack-min-aspect", type=float, default=SIX_PACK_ASPECT_MIN,
+                        help="Minimum width/height ratio to promote can -> six_pack")
     parser.add_argument("--debug-features", action="store_true",
                         help="Overlay shape features on detections")
     args = parser.parse_args()
@@ -404,8 +486,11 @@ def main():
         if (not args.no_track and not use_byte_track)
         else None
     )
-    bottle_names = parse_name_list(args.yolo_bottle_names)
-    can_names = parse_name_list(args.yolo_can_names)
+    class_aliases = parse_class_aliases(
+        args.yolo_bottle_names,
+        args.yolo_can_names,
+        args.yolo_six_pack_names,
+    )
 
     frame_idx = 0
     paused = False
@@ -416,7 +501,6 @@ def main():
             if not ret:
                 break
         elif frame is None:
-            # Nothing to show yet if paused before first frame arrives.
             continue
 
         if not paused:
@@ -452,18 +536,39 @@ def main():
                         continue
                     if not is_reasonable_bbox(w, h, frame.shape):
                         continue
-                    label = map_yolo_label(raw_label, bottle_names, can_names)
+                    label = map_yolo_label(raw_label, class_aliases)
+                    if label == "unknown" and args.enable_six_pack_heuristic:
+                        label = "can"
                     if label == "unknown":
                         continue
-                    # Compute approximate features from bbox for debug only.
+                    if args.enable_six_pack_heuristic:
+                        label = classify_six_pack_from_geometry(
+                            label,
+                            w,
+                            h,
+                            frame.shape,
+                            min_area_fraction=args.six_pack_min_area_fraction,
+                            min_aspect=args.six_pack_min_aspect,
+                        )
+
                     if args.debug_features and args.show:
                         aspect = w / max(h, 1)
-                        # Approximate circularity using bbox as a proxy (not contour-accurate).
                         perim = 2 * (w + h)
                         area = w * h
                         circularity = 0.0 if perim == 0 else (4 * np.pi * area) / (perim * perim)
-                    cx = x + w // 2
-                    cy = y + h // 2
+
+                    if args.centroid_mode == "refined":
+                        cx, cy, centroid_contour = refine_centroid(
+                            frame,
+                            x,
+                            y,
+                            w,
+                            h,
+                            threshold_bias=args.centroid_threshold_bias,
+                        )
+                    else:
+                        cx, cy, centroid_contour = x + w // 2, y + h // 2, None
+
                     if use_byte_track:
                         mapped.append((cx, cy, label, conf, tid))
                     else:
@@ -471,6 +576,8 @@ def main():
 
                     if args.show:
                         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                        if centroid_contour is not None:
+                            cv2.drawContours(frame, [centroid_contour], -1, (0, 200, 255), 1)
                         cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
                         track_tag = f" id={tid}" if tid is not None else ""
                         cv2.putText(frame, f"{label} {conf:.2f}{track_tag}", (x, y - 5),
@@ -502,9 +609,7 @@ def main():
                     cy = y + h // 2
 
                     roi = frame[y:y + h, x:x + w]
-
                     label = classify_with_model(net, roi)
-
                     results.append((cx, cy, label, 0.0))
 
                     if args.show:
@@ -529,21 +634,15 @@ def main():
                         cx, cy, label, conf = item
                         tid = None
                     world_xy = project_point(homography, cx, cy) if homography is not None else None
+                    track_msg = f" track={tid}" if tid is not None else ""
+                    world_msg = (
+                        f" {args.homography_units}=({world_xy[0]:.2f},{world_xy[1]:.2f})"
+                        if world_xy is not None
+                        else ""
+                    )
                     if conf > 0:
-                        track_msg = f" track={tid}" if tid is not None else ""
-                        world_msg = (
-                            f" {args.homography_units}=({world_xy[0]:.2f},{world_xy[1]:.2f})"
-                            if world_xy is not None
-                            else ""
-                        )
                         print(f"frame={frame_idx} centroid=({cx},{cy}) class={label} conf={conf:.2f}{track_msg}{world_msg}")
                     else:
-                        track_msg = f" track={tid}" if tid is not None else ""
-                        world_msg = (
-                            f" {args.homography_units}=({world_xy[0]:.2f},{world_xy[1]:.2f})"
-                            if world_xy is not None
-                            else ""
-                        )
                         print(f"frame={frame_idx} centroid=({cx},{cy}) class={label}{track_msg}{world_msg}")
                     if args.show and world_xy is not None:
                         cv2.putText(
@@ -561,7 +660,7 @@ def main():
             key = cv2.waitKey(1 if not paused else 30) & 0xFF
             if key == 27:
                 break
-            if key == ord('p'):
+            if key == ord("p"):
                 paused = not paused
 
     cap.release()

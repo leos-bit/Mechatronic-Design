@@ -1,40 +1,15 @@
 # Mechatronic-Design
 
-This repo contains code and experiments for classifying bottles vs cans on a conveyor belt using YOLO and OpenCV.
+This repo contains code and experiments for conveyor-belt object detection using YOLO and OpenCV. The current computer vision pipeline supports bottles, cans, and an optional `six_pack` class.
 
-## Structure
-- `code/` — scripts (detection + utilities)
-- `data/` — datasets (not tracked)
-- `labels/` — labeling exports (not tracked)
-- `models/` — weights (not tracked)
-- `trials/` — training runs (not tracked)
-- `results/` — future outputs
+## Key scripts
+- `code/belt_objects.py`: runtime detection, centroid estimation, tracking, and homography projection
+- `code/auto_label_video.py`: sample frames from a video and auto-generate YOLO labels
+- `code/extract_frames.py`: pull frames for manual labeling
 
-## Setup
-Activate the Python environment:
+## Detection
+Run from `Computer Vision/`:
 
-```bash
-source /Users/leoshaw/Documents/VSCode/.venv314/bin/activate
-```
-
-## Run Detection
-On Leo's machine:
-```bash
-python3 "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/code/belt_objects.py" \
-  --video "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/IMG_1055.mov" \
-  --yolo-model "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/trials/trial5-manual-auto/weights/best.pt" \
-  --tracker-type byte \
-  --byte-track-config "bytetrack.yaml" \
-  --homography-src "0,681;0,0;1079,681;1079,0" \
-  --homography-dst "-254,-152.4;-254,152.4;254,-152.4;254,152.4" \
-  --homography-units "mm" \
-  --yolo-bottle-names "bottle" \
-  --yolo-can-names "can" \
-  --yolo-conf 0.35 \
-  --show
-```
-
-Portable command (run from repo root):
 ```bash
 python3 "code/belt_objects.py" \
   --video "IMG_1055.mov" \
@@ -46,30 +21,33 @@ python3 "code/belt_objects.py" \
   --homography-units "mm" \
   --yolo-bottle-names "bottle" \
   --yolo-can-names "can" \
+  --yolo-six-pack-names "6-pack,six-pack,six_pack,6pack" \
+  --centroid-mode refined \
   --yolo-conf 0.35 \
   --show
 ```
 
-## Extract Frames for Labeling
+If you are still using a 2-class model and want to test `six_pack` before retraining, add:
+
 ```bash
-python3 "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/code/extract_frames.py" \
-  --video "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/IMG_0985.mov" \
-  --out "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/labels/labels_src" \
-  --count 200 \
-  --start 0 \
-  --step 5
+--enable-six-pack-heuristic --six-pack-min-area-fraction 0.025 --six-pack-min-aspect 1.2
 ```
 
-## Train (Detect on PackDet 2-class)
+## Auto-labeling
+Generate a 3-class dataset when your model already has a six-pack class, or when you want to seed labels with the heuristic:
+
 ```bash
-/Users/leoshaw/Documents/VSCode/.venv314/bin/yolo detect train \
-  data="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/packdet_2class/data.yaml" \
-  model="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/models/yolov8n.pt" \
-  imgsz=640 epochs=30 batch=8 \
-  project="/Users/leoshaw/Documents/VSCode/VS_CMU_S26/MechatronicDesign/Computer Vision/trials" \
-  name=trial4
+python3 "code/auto_label_video.py" \
+  --video "IMG_1055.mov" \
+  --model "trials/trial5-manual-auto/weights/best.pt" \
+  --out "manual_3class_auto" \
+  --num-frames 250 \
+  --step 5 \
+  --include-six-pack \
+  --enable-six-pack-heuristic
 ```
 
 ## Notes
+- `centroid-mode refined` estimates the object center from the silhouette inside each YOLO box instead of using the raw box center.
+- Track labels are now stabilized with confidence-weighted votes to reduce frame-to-frame flips.
 - Large datasets, models, and training runs are excluded via `.gitignore`.
-- If you want to track models, use Git LFS.
