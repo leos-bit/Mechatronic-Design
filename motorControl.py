@@ -24,7 +24,11 @@ from belt_objects import load_yolo, parse_class_aliases, detect_objects_in_frame
 # Global control variables
 running = True
 servo_ids = [3, 4, 5]  # IDs of the three bus servos
-MOVE_DURATION_S = 0.8
+MOVE_DURATION_S = 0.3
+SERVO_ZERO_OFFSETS_DEG = {3: 87.0, 4: 90.0, 5: 90.0}
+SERVO_DIRECTIONS = {3: -1.0, 4: -1.0, 5: -1.0}
+SERVO_ANGLE_SCALES = {3: 1.0, 4: 1.0, 5: 1.0}
+SERVO_STARTUP_ENABLE_DELAY_S = 0.35
 
 # Board initialization
 board = None
@@ -308,11 +312,12 @@ def move_servos(servo_positions):
         servo_commands = []
         for servo_id in servo_ids:
             if servo_id in servo_positions:
-                angle = servo_positions[servo_id]
-                # Clamp angle to valid range (0-240)
-                angle = max(0, min(240, angle))
-                # Convert angle to position (0-1000)
-                raw_pos = int((angle / 240.0) * 1000)
+                logical_angle = float(servo_positions[servo_id])
+                direction = SERVO_DIRECTIONS.get(servo_id, 1.0)
+                scale = SERVO_ANGLE_SCALES.get(servo_id, 1.0)
+                physical_angle = SERVO_ZERO_OFFSETS_DEG.get(servo_id, 0.0) + (direction * scale * logical_angle)
+                physical_angle = max(0.0, min(240.0, physical_angle))
+                raw_pos = int((physical_angle / 240.0) * 1000)
                 servo_commands.append([servo_id, raw_pos])
         
         if servo_commands:
@@ -347,11 +352,12 @@ if __name__ == '__main__':
         
         # Initialize servos - set to torque ON (0)
         if board is not None:
-            print("Initializing servos...")
+            print(f"Initializing servos sequentially (delay={SERVO_STARTUP_ENABLE_DELAY_S:.2f}s)...")
             for servo_id in servo_ids:
                 try:
                     board.bus_servo_enable_torque(servo_id, 0)
                     print(f"Servo {servo_id} torque ON")
+                    time.sleep(SERVO_STARTUP_ENABLE_DELAY_S)
                 except Exception as e:
                     print(f"Warning: Could not enable servo {servo_id}: {e}")
         else:

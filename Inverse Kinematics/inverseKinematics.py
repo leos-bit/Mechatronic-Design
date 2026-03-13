@@ -1,5 +1,4 @@
-from math import sqrt, atan, degrees, cos, sin, radians
-from itertools import permutations
+from math import sqrt, atan, degrees, cos, sin, radians, isfinite
 l = 533.4
 L = 304.8
 sb = 265.7
@@ -8,8 +7,11 @@ wb = (sqrt(3)/6)*sb
 ub = (sqrt(3)/3)*sb
 wp = (sqrt(3)/6)*sp
 up = (sqrt(3)/3)*sp
+FK_RESIDUAL_MAX_MM = 80.0
 
 def atand(x, y):
+    if y == 0:
+        return 90.0 if x >= 0 else -90.0
     return degrees(atan(x/ y))
 
 def cosd(x):
@@ -38,11 +40,13 @@ def threeSpheres(tup):
         B = -2*z1
         C = z1**2 - r1**2 + (xSoln-x1)**2 + (ySoln-y1)**2
 
-        zPlusSoln = (-B + sqrt(B**2 - 4*C))/2
-        zMinusSoln = (-B - sqrt(B**2 - 4*C))/2
-
-        if B**2 - 4*C < 0:
+        disc = B**2 - 4*C
+        if disc < 0:
             valid = False
+            return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), valid
+
+        zPlusSoln = (-B + sqrt(disc))/2
+        zMinusSoln = (-B - sqrt(disc))/2
 
         plusSoln = (xSoln, ySoln, zPlusSoln)
         minusSoln = (xSoln, ySoln, zMinusSoln)
@@ -81,11 +85,13 @@ def threeSpheres(tup):
     b = 2*a4*(a5 - x1) - 2*y1 + 2*a6*(a7 - z1)
     c = a5*(a5 - 2*x1) + a7*(a7 - 2*z1) + x1**2 + y1**2 - r1**2
 
-    yPlusSoln = (-b+sqrt(b**2 - 4*a*c))/(2*a)
-    yMinusSoln = (-b-sqrt(b**2 - 4*a*c))/(2*a)
-
-    if b**2 - 4*a*c < 0:
+    disc = b**2 - 4*a*c
+    if disc < 0:
         valid = False
+        return (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), valid
+
+    yPlusSoln = (-b+sqrt(disc))/(2*a)
+    yMinusSoln = (-b-sqrt(disc))/(2*a)
     xPlusSoln = a4*yPlusSoln + a5
     xMinusSoln = a4*yMinusSoln + a5
 
@@ -106,22 +112,38 @@ def fk(t1, t2, t3):
     plusSol, minusSol, valid = threeSpheres(getSphereCenters(t1, t2, t3))
     if minusSol[2] <= 0: return minusSol, valid
     elif plusSol[2] <= 0: return plusSol, valid
+    return None
 
 
-def decider(theta1_plus,theta1_minus,theta2_plus,theta2_minus,theta3_plus,theta3_minus):
-    valid = False
+def decider(theta1_plus,theta1_minus,theta2_plus,theta2_minus,theta3_plus,theta3_minus, target_xyz=None, max_fk_error_mm=FK_RESIDUAL_MAX_MM):
     theta1s = (theta1_plus, theta1_minus)
     theta2s = (theta2_plus, theta2_minus)
     theta3s = (theta3_plus, theta3_minus)
+    best = None
     for t1 in theta1s:
         for t2 in theta2s:
             for t3 in theta3s:
-                # print(t1, t2, t3)
-                solution, isValid = fk(t1, t2, t3)
-                # print(solution, isValid)
-                if isValid and -90 < t1 < 90 and -90 < t2 < 90 and -90 < t3 < 90: 
+                fk_result = fk(t1, t2, t3)
+                if fk_result is None:
+                    continue
+                solution, isValid = fk_result
+                if not isValid:
+                    continue
+                if not (-90 < t1 < 90 and -90 < t2 < 90 and -90 < t3 < 90):
+                    continue
+                if target_xyz is None:
                     return t1, t2, t3
-    return None
+                tx, ty, tz = target_xyz
+                err = sqrt((solution[0]-tx)**2 + (solution[1]-ty)**2 + (solution[2]-tz)**2)
+                if not isfinite(err):
+                    continue
+                if best is None or err < best[0]:
+                    best = (err, (t1, t2, t3))
+    if best is None:
+        return None
+    if best[0] > max_fk_error_mm:
+        return None
+    return best[1]
 
 
 
@@ -141,19 +163,26 @@ def getAngles(x, y, z):
     F3 = 2*z*L
     G3 = x**2 + y**2 + z**2 + b**2 + c**2 + L**2 + 2*(-x*b+y*c) - l**2
 
-    if E1**2 + F1**2 - G1**2 < 0 or E2**2 + F2**2 - G2**2  < 0 or E3**2 + F3**2 - G3**2 < 0:
+    d1 = E1**2 + F1**2 - G1**2
+    d2 = E2**2 + F2**2 - G2**2
+    d3 = E3**2 + F3**2 - G3**2
+    if d1 < 0 or d2 < 0 or d3 < 0:
         return None
 
-    theta1_plus = 2*atand((-F1+sqrt(E1**2 + F1**2 - G1**2)), (G1-E1))
-    theta1_minus = 2*atand((-F1-sqrt(E1**2 + F1**2 - G1**2)), (G1-E1))
+    theta1_plus = 2*atand((-F1+sqrt(d1)), (G1-E1))
+    theta1_minus = 2*atand((-F1-sqrt(d1)), (G1-E1))
 
-    theta2_plus = 2*atand((-F2+sqrt(E2**2 + F2**2 - G2**2)),(G2-E2))
-    theta2_minus = 2*atand((-F2-sqrt(E2**2 + F2**2 - G2**2)), (G2-E2))
+    theta2_plus = 2*atand((-F2+sqrt(d2)),(G2-E2))
+    theta2_minus = 2*atand((-F2-sqrt(d2)), (G2-E2))
     
-    theta3_plus = 2*atand((-F3+sqrt(E3**2 + F3**2 - G3**2)), (G3-E3))
-    theta3_minus = 2*atand((-F3-sqrt(E3**2 + F3**2 - G3**2)), (G3-E3))
+    theta3_plus = 2*atand((-F3+sqrt(d3)), (G3-E3))
+    theta3_minus = 2*atand((-F3-sqrt(d3)), (G3-E3))
 
-    return decider(theta1_plus,theta1_minus,theta2_plus,theta2_minus,theta3_plus,theta3_minus)
+    return decider(
+        theta1_plus, theta1_minus, theta2_plus, theta2_minus, theta3_plus, theta3_minus,
+        target_xyz=(x, y, z),
+        max_fk_error_mm=FK_RESIDUAL_MAX_MM,
+    )
 
 def main():
     print(getAngles(0, 0, 0))
