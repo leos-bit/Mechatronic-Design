@@ -11,14 +11,17 @@ CURRENT_DIR = Path(__file__).resolve().parent
 MOTOR_DEMO_DIR = CURRENT_DIR / "Motor Control" / "board_demo"
 CAMERA_DIR = CURRENT_DIR / "cameraCode"
 CV_CODE_DIR = CURRENT_DIR / "Computer Vision" / "code"
+IK_DIR = CURRENT_DIR / "Inverse Kinematics"
 
 # Add path to access board SDK, camera module, and CV helpers
 sys.path.insert(0, str(MOTOR_DEMO_DIR))
 sys.path.insert(0, str(CAMERA_DIR))
 sys.path.insert(0, str(CV_CODE_DIR))
+sys.path.insert(0, str(IK_DIR))
 
 import ros_robot_controller_sdk as rrc
 import takePhoto
+import inverseKinematics
 from belt_objects import load_yolo, parse_class_aliases, detect_objects_in_frame
 
 # Global control variables
@@ -64,6 +67,10 @@ CV_HOMOGRAPHY_DST = "-254,-152.4;-254,152.4;254,-152.4;254,152.4"
 CV_CENTROID_MODE = "refined"
 CV_ENABLE_SIX_PACK_HEURISTIC = False
 CV_TARGET_MODE = "belt_order"  # belt_order | nearest_center | highest_confidence
+CV_CONTROL_MODE = "world_ik"  # world_ik | centroid
+CV_TARGET_Z_MM = -550.0
+CV_WORLD_X_BIAS_MM = 0.0
+CV_WORLD_Y_BIAS_MM = 0.0
 
 # Input source config
 INPUT_SOURCE_MODE = "recorded"  # live | recorded
@@ -223,6 +230,19 @@ def _centroid_to_servo_angles(cx, cy, width, height):
     }
 
 
+def _world_to_servo_angles(world_xy):
+    if world_xy is None:
+        return None
+    wx, wy = world_xy
+    x = float(wx) + CV_WORLD_X_BIAS_MM
+    y = float(wy) + CV_WORLD_Y_BIAS_MM
+    z = float(CV_TARGET_Z_MM)
+    angles = inverseKinematics.getAngles(x, y, z)
+    if angles is None:
+        return None
+    return {3: float(angles[0]), 4: float(angles[1]), 5: float(angles[2])}
+
+
 def analyze_photo(image):
     try:
         if image is None:
@@ -277,7 +297,18 @@ def analyze_photo(image):
             return image_with_centroid, neutral
 
         cx, cy = target["centroid"]
-        servo_positions = _centroid_to_servo_angles(cx, cy, w, h)
+        world = target.get("world")
+
+        servo_positions = None
+        if CV_CONTROL_MODE == "world_ik" and world is not None:
+            servo_positions = _world_to_servo_angles(world)
+            if servo_positions is None:
+                print(
+                    f"[ANALYSIS] world IK invalid at world=({world[0]:.1f},{world[1]:.1f}) "
+                    f"z={CV_TARGET_Z_MM:.1f} mm, falling back to centroid mode"
+                )
+        if servo_positions is None:
+            servo_positions = _centroid_to_servo_angles(cx, cy, w, h)
 
         cv2.circle(image_with_centroid, (int(frame_center[0]), int(frame_center[1])), 6, (255, 255, 0), 2)
         cv2.circle(image_with_centroid, (cx, cy), 8, (0, 255, 255), 2)
@@ -289,11 +320,10 @@ def analyze_photo(image):
             1,
         )
 
-        world = target.get("world")
         world_msg = f", world=({world[0]:.1f},{world[1]:.1f}) {target.get('world_units')}" if world else ""
         print(
             f"[ANALYSIS] target={target['class']} centroid=({cx},{cy}) conf={target['confidence']:.2f}"
-            f"{world_msg} -> angles: {servo_positions}"
+            f"{world_msg} mode={CV_CONTROL_MODE} -> angles: {servo_positions}"
         )
         return image_with_centroid, servo_positions
 

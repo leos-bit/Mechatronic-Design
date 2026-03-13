@@ -2,6 +2,7 @@ import signal
 import time
 import sys
 import os
+import threading
 
 # Add path to access ros_robot_controller_sdk and takePhoto
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/Motor Control/board_demo')
@@ -41,6 +42,9 @@ except Exception as e:
     print(f"WARNING: Could not initialize board: {e}")
     print("Continuing in camera-only mode (servos disabled)")
 
+motion_lock = threading.Lock()
+sequence_running = False
+
 def read_servos(servo_ids):
     for servo_id in servo_ids:
         try:
@@ -50,30 +54,35 @@ def read_servos(servo_ids):
         except Exception as e:
             print(f"Could not read position for servo {servo_id}: {e}")
 
-def move_servos(servo_positions):
+def move_servos(servo_positions, update_activity=True):
     if board is None:
         print("Board not initialized, skipping servo movement")
         return
     
     try:
-        # Convert angles to servo positions and move servos
-        servo_commands = []
-        for servo_id in servo_ids:
-            if servo_id in servo_positions:
-                logical_angle = float(servo_positions[servo_id])
-                direction = SERVO_DIRECTIONS.get(servo_id, 1.0)
-                scale = SERVO_ANGLE_SCALES.get(servo_id, 1.0)
-                physical_angle = SERVO_ZERO_OFFSETS_DEG.get(servo_id, 0.0) + (direction * scale * logical_angle)
-                physical_angle = max(0.0, min(240.0, physical_angle))
-                raw_pos = int((physical_angle / 240.0) * 1000)
-                servo_commands.append([servo_id, raw_pos])
-        
-        if servo_commands:
-            print(f"Moving servos simultaneously: {servo_commands}")
-            board.bus_servo_set_position(MOVE_DURATION_S * 3, servo_commands)
-            time.sleep(MOVE_DURATION_S * 3 + 0.05)
-            # Read back positions for confirmation
-            read_servos(servo_ids)
+        with motion_lock:
+            # Convert angles to servo positions and move servos
+            servo_commands = []
+            for servo_id in servo_ids:
+                if servo_id in servo_positions:
+                    logical_angle = float(servo_positions[servo_id])
+                    direction = SERVO_DIRECTIONS.get(servo_id, 1.0)
+                    scale = SERVO_ANGLE_SCALES.get(servo_id, 1.0)
+                    physical_angle = SERVO_ZERO_OFFSETS_DEG.get(servo_id, 0.0) + (direction * scale * logical_angle)
+                    physical_angle = max(0.0, min(240.0, physical_angle))
+                    raw_pos = int((physical_angle / 240.0) * 1000)
+                    servo_commands.append([servo_id, raw_pos])
+            
+            if servo_commands:
+                if update_activity:
+                    print(f"Moving servos simultaneously: {servo_commands}")
+                board.bus_servo_set_position(MOVE_DURATION_S * 3, servo_commands)
+                time.sleep(MOVE_DURATION_S * 3 + 0.05)
+                # Read back positions for confirmation
+                if update_activity:
+                    read_servos(servo_ids)
+                if update_activity:
+                    pass
     
     except Exception as e:
         print(f"Error moving servos: {e}")
@@ -121,36 +130,46 @@ def build_square_points(cx, cy, z, side_len):
 
 
 def run_square_path(cx, cy, z, side_len, dwell_s=SQUARE_DWELL_S):
+    global sequence_running
+    sequence_running = True
     points = build_square_points(cx, cy, z, side_len)
     if points:
         points.append(points[0])
     print(f"Square path center=({cx:.1f},{cy:.1f},{z:.1f}) side={side_len:.1f} mm")
-    for idx, (px, py, pz) in enumerate(points, start=1):
-        angles = inverseKinematics.getAngles(px, py, pz)
-        print(f"  P{idx}: ({px:.1f},{py:.1f},{pz:.1f}) -> IK {angles}")
-        if angles is None:
-            print(f"  P{idx} skipped: no valid IK solution")
-            continue
-        servo_positions = {3: angles[0], 4: angles[1], 5: angles[2]}
-        move_servos(servo_positions)
-        time.sleep(max(0.0, dwell_s))
+    try:
+        for idx, (px, py, pz) in enumerate(points, start=1):
+            angles = inverseKinematics.getAngles(px, py, pz)
+            print(f"  P{idx}: ({px:.1f},{py:.1f},{pz:.1f}) -> IK {angles}")
+            if angles is None:
+                print(f"  P{idx} skipped: no valid IK solution")
+                continue
+            servo_positions = {3: angles[0], 4: angles[1], 5: angles[2]}
+            move_servos(servo_positions, update_activity=False)
+            time.sleep(max(0.0, dwell_s))
+    finally:
+        sequence_running = False
 
 
 def run_updown_test(cycles=UPDOWN_DEFAULT_CYCLES, dwell_s=UPDOWN_DWELL_S):
+    global sequence_running
+    sequence_running = True
     print(
         f"Up/down test at x=0, y=0 between z={UPDOWN_Z_LOW:.1f} and z={UPDOWN_Z_HIGH:.1f}, "
         f"cycles={cycles}, dwell={dwell_s:.2f}s"
     )
     waypoints = [(0.0, 0.0, UPDOWN_Z_LOW), (0.0, 0.0, UPDOWN_Z_HIGH)]
-    for i in range(cycles):
-        for idx, (x, y, z) in enumerate(waypoints, start=1):
-            angles = inverseKinematics.getAngles(x, y, z)
-            print(f"  Cycle {i+1} P{idx}: ({x:.1f},{y:.1f},{z:.1f}) -> IK {angles}")
-            if angles is None:
-                print("  Skipped: no valid IK solution")
-                continue
-            move_servos({3: angles[0], 4: angles[1], 5: angles[2]})
-            time.sleep(max(0.0, dwell_s))
+    try:
+        for i in range(cycles):
+            for idx, (x, y, z) in enumerate(waypoints, start=1):
+                angles = inverseKinematics.getAngles(x, y, z)
+                print(f"  Cycle {i+1} P{idx}: ({x:.1f},{y:.1f},{z:.1f}) -> IK {angles}")
+                if angles is None:
+                    print("  Skipped: no valid IK solution")
+                    continue
+                move_servos({3: angles[0], 4: angles[1], 5: angles[2]}, update_activity=False)
+                time.sleep(max(0.0, dwell_s))
+    finally:
+        sequence_running = False
 
 
 def parse_control_input(text):
@@ -236,9 +255,8 @@ if __name__ == '__main__':
         print("  XYZ IK:     x,100,0,120   or   100,0,120")
         print("  Angles:     a,10,0,-5     (maps directly to servos 3,4,5)")
         print("  Torque:     t,on          or   t,off,3")
-        print("  Square IK:  sq,0,0,-240,40,0.6")
+        print("  Square IK:  sq,0,0,-550,40,0.6")
         print("  Up/Down IK: ud,5,0.6      (x=0,y=0,z=-600<->-400)")
-        
         # Main loop - capture, analyze, and move servos
         while running:
             try:
