@@ -27,6 +27,10 @@ UPDOWN_Z_LOW = -600.0
 UPDOWN_Z_HIGH = -400.0
 UPDOWN_DWELL_S = 0.6
 UPDOWN_DEFAULT_CYCLES = 5
+NPATH_X_MM = 200.0
+NPATH_Y_MM = 200.0
+NPATH_Z_LOW = -550.0
+NPATH_Z_HIGH = -350.0
 TORQUE_ON_HOLD_DURATION_S = 0.35
 TORQUE_ON_SETTLE_S = 0.08
 TORQUE_ON_AUTO_HOLD_ZERO = True
@@ -172,6 +176,44 @@ def run_updown_test(cycles=UPDOWN_DEFAULT_CYCLES, dwell_s=UPDOWN_DWELL_S):
         sequence_running = False
 
 
+def run_n_path(x_mm=NPATH_X_MM, y_mm=NPATH_Y_MM, dwell_s=SQUARE_DWELL_S):
+    global sequence_running
+    sequence_running = True
+    anchors = [
+        (x_mm, 0.0),
+        (-x_mm, 0.0),
+        (0.0, y_mm),
+        (0.0, -y_mm),
+    ]
+    points = []
+    z_pairs = [
+        (NPATH_Z_LOW, NPATH_Z_HIGH),
+        (NPATH_Z_HIGH, NPATH_Z_LOW),
+        (NPATH_Z_LOW, NPATH_Z_HIGH),
+        (NPATH_Z_HIGH, NPATH_Z_LOW),
+    ]
+    for (ax, ay), (z1, z2) in zip(anchors, z_pairs):
+        points.append((ax, ay, z1))
+        points.append((ax, ay, z2))
+    print(
+        "N-path test anchors: "
+        f"({x_mm:.0f},0)->({-x_mm:.0f},0)->(0,{y_mm:.0f})->(0,{-y_mm:.0f}) "
+        f"with z order [{NPATH_Z_LOW:.0f},{NPATH_Z_HIGH:.0f},{NPATH_Z_HIGH:.0f},{NPATH_Z_LOW:.0f},"
+        f"{NPATH_Z_LOW:.0f},{NPATH_Z_HIGH:.0f},{NPATH_Z_HIGH:.0f},{NPATH_Z_LOW:.0f}]"
+    )
+    try:
+        for idx, (x, y, z) in enumerate(points, start=1):
+            angles = inverseKinematics.getAngles(x, y, z)
+            print(f"  P{idx}: ({x:.1f},{y:.1f},{z:.1f}) -> IK {angles}")
+            if angles is None:
+                print(f"  P{idx} skipped: no valid IK solution")
+                continue
+            move_servos({3: angles[0], 4: angles[1], 5: angles[2]}, update_activity=False)
+            time.sleep(max(0.0, dwell_s))
+    finally:
+        sequence_running = False
+
+
 def parse_control_input(text):
     """
     Supported formats:
@@ -181,6 +223,7 @@ def parse_control_input(text):
       - "t, on|off[, servo_id]" (manual torque control)
       - "sq, cx, cy, z, side_len[, dwell_s]" (run 4-point square via IK)
       - "ud[, cycles[, dwell_s]]" (x=0,y=0 alternating z up/down test)
+      - "n[, x, y[, dwell_s]]" (pick/place N-path sequence)
     """
     parts = [p.strip() for p in text.split(",") if p.strip()]
     if not parts:
@@ -223,6 +266,19 @@ def parse_control_input(text):
         dwell_s = float(parts[2]) if len(parts) == 3 else UPDOWN_DWELL_S
         return ("updown", (cycles, dwell_s))
 
+    if mode_token in ("n", "npath"):
+        if len(parts) not in (1, 2, 3, 4):
+            raise ValueError("n-path mode requires: n[, x, y[, dwell_s]]")
+        if len(parts) == 1:
+            return ("npath", (NPATH_X_MM, NPATH_Y_MM, SQUARE_DWELL_S))
+        if len(parts) == 2:
+            dwell_s = float(parts[1])
+            return ("npath", (NPATH_X_MM, NPATH_Y_MM, dwell_s))
+        x_mm = float(parts[1])
+        y_mm = float(parts[2])
+        dwell_s = float(parts[3]) if len(parts) == 4 else SQUARE_DWELL_S
+        return ("npath", (x_mm, y_mm, dwell_s))
+
     if len(parts) == 3:
         x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
         return ("xyz", (x, y, z))
@@ -257,6 +313,7 @@ if __name__ == '__main__':
         print("  Torque:     t,on          or   t,off,3")
         print("  Square IK:  sq,0,0,-550,40,0.6")
         print("  Up/Down IK: ud,5,0.6      (x=0,y=0,z=-600<->-400)")
+        print("  N Path IK:  n,200,200,0.6 (anchors: (x,0),(-x,0),(0,y),(0,-y))")
         # Main loop - capture, analyze, and move servos
         while running:
             try:
@@ -288,6 +345,9 @@ if __name__ == '__main__':
                     elif mode == "updown":
                         cycles, dwell_s = values
                         run_updown_test(cycles, dwell_s)
+                    elif mode == "npath":
+                        x_mm, y_mm, dwell_s = values
+                        run_n_path(x_mm, y_mm, dwell_s)
                 
                 
                 # Tempporary sleep to slow main loop
