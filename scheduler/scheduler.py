@@ -1,0 +1,4 @@
+
+
+def trackObjects(objects, imagePath):
+    
