@@ -23,7 +23,7 @@ sys.path.insert(0, str(IK_DIR))
 import ros_robot_controller_sdk as rrc
 import takePhoto
 import inverseKinematics
-from belt_objects import load_yolo, parse_class_aliases, detect_objects_in_frame
+from belt_objects import *
 
 # Global control variables
 running = True
@@ -424,6 +424,12 @@ if __name__ == '__main__':
                         help="Output photo path for captured/annotated frame")
     args = parser.parse_args()
     
+    class_aliases = parse_class_aliases(
+        "bottle",
+        "can",
+        "6-pack,six-pack,six_pack,6pack",
+    )
+
     try:
         initialize_cv()
         camera, target_format = initialize_camera()
@@ -460,7 +466,7 @@ if __name__ == '__main__':
                 if not cv_ready:
                     raise RuntimeError("CV not initialized; cannot detect centroids")
 
-                detections = _detect_with_cv(image)
+                detections = detect_objects_in_frame(image, cv_model, cv_class_aliases)
                 if not detections:
                     print("[PHOTO] No detections found in photo")
                     continue
