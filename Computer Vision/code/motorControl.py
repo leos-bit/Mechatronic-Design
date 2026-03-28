@@ -446,78 +446,74 @@ if __name__ == '__main__':
         time.sleep(0.5)
         
         if not args.loop:
-            while running:
-                print("Photo-once mode: takePhoto -> detect centroid/world -> confirm move")
-                photo_path = Path(args.photo_path)
-                photo_path.parent.mkdir(parents=True, exist_ok=True)
+            print("Photo-once mode: takePhoto -> detect centroid/world -> confirm move")
+            photo_path = Path(args.photo_path)
+            photo_path.parent.mkdir(parents=True, exist_ok=True)
 
-                image = capture_photo(camera, target_format)
-                if image is None:
-                    raise RuntimeError("No image captured from camera")
-                cv2.imwrite(str(photo_path), image)
-                print(f"Captured and saved photo to {photo_path}")
+            image = capture_photo(camera, target_format)
+            if image is None:
+                raise RuntimeError("No image captured from camera")
+            cv2.imwrite(str(photo_path), image)
+            print(f"Captured and saved photo to {photo_path}")
 
-                if not cv_ready:
-                    raise RuntimeError("CV not initialized; cannot detect centroids")
+            if not cv_ready:
+                raise RuntimeError("CV not initialized; cannot detect centroids")
 
-                detections = _detect_with_cv(image)
-                if not detections:
-                    print("[PHOTO] No detections found in photo")
-                    continue
+            detections = _detect_with_cv(image)
+            if not detections:
+                print("[PHOTO] No detections found in photo")
+                running = False
+            else:
+                print("[PHOTO] Detected objects:")
+                for i, det in enumerate(detections, start=1):
+                    cx, cy = det["centroid"]
+                    world = det.get("world")
+                    world_msg = f" world=({world[0]:.2f},{world[1]:.2f}) {det.get('world_units')}" if world else ""
+                    print(
+                        f"  #{i}: class={det['class']} conf={det['confidence']:.2f} "
+                        f"centroid=({cx},{cy}){world_msg}"
+                    )
+
+                h, w = image.shape[:2]
+                centroid_xy = _parse_xy_pair(args.test_centroid) if args.test_centroid else None
+                if centroid_xy is not None:
+                    target = _choose_by_pixel_centroid(detections, centroid_xy)
                 else:
-                    print("[PHOTO] Detected objects:")
-                    for i, det in enumerate(detections, start=1):
-                        cx, cy = det["centroid"]
-                        world = det.get("world")
-                        world_msg = f" world=({world[0]:.2f},{world[1]:.2f}) {det.get('world_units')}" if world else ""
-                        print(
-                            f"  #{i}: class={det['class']} conf={det['confidence']:.2f} "
-                            f"centroid=({cx},{cy}){world_msg}"
-                        )
-
-                    h, w = image.shape[:2]
-                    centroid_xy = _parse_xy_pair(args.test_centroid) if args.test_centroid else None
-                    if centroid_xy is not None:
-                        target = _choose_by_pixel_centroid(detections, centroid_xy)
-                    else:
-                        target = _choose_target(detections, (w / 2.0, h / 2.0))
-                    if target is None:
-                        print("[PHOTO] No target selected")
-                        continue
-                    else:
-                        cx, cy = target["centroid"]
-                        world = target.get("world")
-                        if CV_CONTROL_MODE == "world_ik":
-                            servo_positions = _world_to_servo_angles(world) if world is not None else None
-                            if servo_positions is None and not CV_FALLBACK_TO_CENTROID:
-                                print("[PHOTO] Selected target has no valid world x,y -> skipping movement")
-                                servo_positions = None
-                            elif servo_positions is None:
-                                servo_positions = _centroid_to_servo_angles(cx, cy, w, h)
-                        else:
+                    target = _choose_target(detections, (w / 2.0, h / 2.0))
+                if target is None:
+                    print("[PHOTO] No target selected")
+                    running = False
+                else:
+                    cx, cy = target["centroid"]
+                    world = target.get("world")
+                    if CV_CONTROL_MODE == "world_ik":
+                        servo_positions = _world_to_servo_angles(world) if world is not None else None
+                        if servo_positions is None and not CV_FALLBACK_TO_CENTROID:
+                            print("[PHOTO] Selected target has no valid world x,y -> skipping movement")
+                            servo_positions = None
+                        elif servo_positions is None:
                             servo_positions = _centroid_to_servo_angles(cx, cy, w, h)
+                    else:
+                        servo_positions = _centroid_to_servo_angles(cx, cy, w, h)
 
-                        overlay = _annotate_target(image, detections, target)
-                        cv2.imwrite(str(photo_path), overlay)
-                        print(f"[PHOTO] Saved annotated photo to {photo_path}")
+                    overlay = _annotate_target(image, detections, target)
+                    cv2.imwrite(str(photo_path), overlay)
+                    print(f"[PHOTO] Saved annotated photo to {photo_path}")
 
-                        world_msg = f" world=({world[0]:.2f},{world[1]:.2f}) {target.get('world_units')}" if world else ""
-                        print(
-                            f"[PHOTO] Selected target class={target['class']} conf={target['confidence']:.2f} "
-                            f"centroid=({cx},{cy}){world_msg} -> angles={servo_positions}"
-                        )
+                    world_msg = f" world=({world[0]:.2f},{world[1]:.2f}) {target.get('world_units')}" if world else ""
+                    print(
+                        f"[PHOTO] Selected target class={target['class']} conf={target['confidence']:.2f} "
+                        f"centroid=({cx},{cy}){world_msg} -> angles={servo_positions}"
+                    )
 
-                        if servo_positions is not None:
-                            choice = input("Move arm to selected target? [y/N]: ").strip().lower()
-                            if choice in ("y", "yes"):
-                                move_servos(servo_positions)
-                            else:
-                                print("[PHOTO] Move canceled by user.")
-                                choice = input("Do you want to stop the system [y/N]: ").strip().lower()
-                                if choice in ("y", "yes"):
-                                    running = False
-                                else:
-                                    continue
+                    if servo_positions is not None:
+                        choice = input("Move arm to selected target? [y/N]: ").strip().lower()
+                        if choice in ("y", "yes"):
+                            move_servos(servo_positions)
+                        else:
+                            print("[PHOTO] Move canceled by user.")
+                            running = False
+                    
         else:
             print("Starting main loop (camera source). Press Ctrl+C to stop.")
             

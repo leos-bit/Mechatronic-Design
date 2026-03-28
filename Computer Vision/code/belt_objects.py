@@ -410,6 +410,101 @@ def map_yolo_label(raw_label, class_aliases):
     return "unknown"
 
 
+def detect_objects_in_frame(
+    frame_bgr,
+    yolo_model,
+    class_aliases,
+    imgsz=640,
+    conf=0.20,
+    iou=0.6,
+    tracker_type="simple",
+    byte_track_config="bytetrack.yaml",
+    centroid_mode="refined",
+    centroid_threshold_bias=CENTROID_THRESHOLD_BIAS,
+    enable_six_pack_heuristic=False,
+    six_pack_min_area_fraction=SIX_PACK_MIN_AREA_FRACTION,
+    six_pack_min_aspect=SIX_PACK_ASPECT_MIN,
+    homography=None,
+    homography_units="world",
+):
+    """
+    Detect and classify objects in a single frame.
+
+    Returns a list of dicts:
+      {
+        "centroid": (cx, cy),
+        "class": "bottle|can|six_pack",
+        "confidence": conf,
+        "bbox_xyxy": (x1, y1, x2, y2),
+        "track_id": id or None,
+        "world": (X, Y) or None,
+        "world_units": homography_units or None,
+      }
+    """
+    if tracker_type == "byte":
+        raw = run_yolo_bytetrack(
+            yolo_model,
+            frame_bgr,
+            imgsz=imgsz,
+            conf=conf,
+            iou=iou,
+            tracker_cfg=byte_track_config,
+        )
+        detections = [(x, y, w, h, raw_label, score, track_id) for x, y, w, h, raw_label, score, track_id in raw]
+    else:
+        raw = run_yolo(yolo_model, frame_bgr, imgsz=imgsz, conf=conf, iou=iou)
+        detections = [(x, y, w, h, raw_label, score, None) for x, y, w, h, raw_label, score in raw]
+
+    results = []
+    for x, y, w, h, raw_label, score, track_id in detections:
+        if w == 0 or h == 0:
+            continue
+        if not is_reasonable_bbox(w, h, frame_bgr.shape):
+            continue
+
+        label = map_yolo_label(raw_label, class_aliases)
+        if label == "unknown" and enable_six_pack_heuristic:
+            label = "can"
+        if label == "unknown":
+            continue
+        if enable_six_pack_heuristic:
+            label = classify_six_pack_from_geometry(
+                label,
+                w,
+                h,
+                frame_bgr.shape,
+                min_area_fraction=six_pack_min_area_fraction,
+                min_aspect=six_pack_min_aspect,
+            )
+
+        if centroid_mode == "refined":
+            cx, cy, _ = refine_centroid(
+                frame_bgr,
+                x,
+                y,
+                w,
+                h,
+                threshold_bias=centroid_threshold_bias,
+            )
+        else:
+            cx, cy = x + w // 2, y + h // 2
+
+        x1, y1, x2, y2 = x, y, x + w, y + h
+        world_xy = project_point(homography, cx, cy) if homography is not None else None
+        results.append(
+            {
+                "centroid": (int(cx), int(cy)),
+                "class": label,
+                "confidence": float(score),
+                "bbox_xyxy": (int(x1), int(y1), int(x2), int(y2)),
+                "track_id": None if track_id is None else int(track_id),
+                "world": world_xy,
+                "world_units": homography_units if world_xy is not None else None,
+            }
+        )
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=True, help="Absolute path to video file")

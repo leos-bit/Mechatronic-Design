@@ -1,0 +1,161 @@
+{
+  "aruco_dict": "DICT_ARUCO_ORIGINAL",
+  "aruco_tag_id": 0,
+  "calibration_z_mm": -500.0,
+  "zero_pixel_xy": [
+    1360.0,
+    734.75
+  ],
+  "affine_pixel_to_world_xy": [
+    [
+      0.9999999999999999,
+      6.523507001997804e-17,
+      -1360.0
+    ],
+    [
+      1.8599735901141883e-17,
+      0.9999999999999999,
+      -734.75
+    ]
+  ],
+  "affine_world_to_robot_command_xy": [
+    [
+      0.19040401001004237,
+      0.31028478773400237,
+      -1.5217043626574414
+    ],
+    [
+      0.2752130249371328,
+      -0.17349893665279137,
+      2.473014080646246
+    ]
+  ],
+  "samples": [
+    {
+      "command_xy_mm": [
+        -100.0,
+        -100.0
+      ],
+      "pixel_xy": [
+        986.25,
+        669.0
+      ],
+      "world_xy_from_zero_pixels": [
+        -373.75,
+        -65.75
+      ]
+    },
+    {
+      "command_xy_mm": [
+        0.0,
+        -100.0
+      ],
+      "pixel_xy": [
+        1106.75,
+        875.5
+      ],
+      "world_xy_from_zero_pixels": [
+        -253.25,
+        140.75
+      ]
+    },
+    {
+      "command_xy_mm": [
+        100.0,
+        -100.0
+      ],
+      "pixel_xy": [
+        1246.5,
+        1116.0
+      ],
+      "world_xy_from_zero_pixels": [
+        -113.5,
+        381.25
+      ]
+    },
+    {
+      "command_xy_mm": [
+        -100.0,
+        0.0
+      ],
+      "pixel_xy": [
+        1209.25,
+        508.0
+      ],
+      "world_xy_from_zero_pixels": [
+        -150.75,
+        -226.75
+      ]
+    },
+    {
+      "command_xy_mm": [
+        0.0,
+        0.0
+      ],
+      "pixel_xy": [
+        1360.25,
+        712.25
+      ],
+      "world_xy_from_zero_pixels": [
+        0.25,
+        -22.5
+      ]
+    },
+    {
+      "command_xy_mm": [
+        100.0,
+        0.0
+      ],
+      "pixel_xy": [
+        1502.25,
+        976.5
+      ],
+      "world_xy_from_zero_pixels": [
+        142.25,
+        241.75
+      ]
+    },
+    {
+      "command_xy_mm": [
+        -100.0,
+        100.0
+      ],
+      "pixel_xy": [
+        1471.25,
+        351.0
+      ],
+      "world_xy_from_zero_pixels": [
+        111.25,
+        -383.75
+      ]
+    },
+    {
+      "command_xy_mm": [
+        0.0,
+        100.0
+      ],
+      "pixel_xy": [
+        1614.0,
+        567.75
+      ],
+      "world_xy_from_zero_pixels": [
+        254.0,
+        -167.0
+      ]
+    },
+    {
+      "command_xy_mm": [
+        100.0,
+        100.0
+      ],
+      "pixel_xy": [
+        1764.25,
+        812.0
+      ],
+      "world_xy_from_zero_pixels": [
+        404.25,
+        77.25
+      ]
+    }
+  ]
+}

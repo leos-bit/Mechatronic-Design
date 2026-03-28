@@ -1,9 +1,9 @@
 from math import sqrt, atan, degrees, cos, sin, radians, isfinite
-l = 533.4   # forearm length
-L = 304.8   # bicep length
-sb = 266.7   # base triangle side length
-sp = 69.85   # end triangle side length
-wb = (sqrt(3)/6)*sb  # other geometry numbers for the triangles
+l = 533.4
+L = 304.8
+sb = 265.7
+sp = 127
+wb = (sqrt(3)/6)*sb
 ub = (sqrt(3)/3)*sb
 wp = (sqrt(3)/6)*sp
 up = (sqrt(3)/3)*sp
