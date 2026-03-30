@@ -1,7 +1,7 @@
 
 import time
 import sys
-sys.path.append("./Computer Vision")
+sys.path.append("../Computer Vision")
 from belt_objects import *
 # Going to need to tune these
 ms_per_100pixel = 100
@@ -44,7 +44,7 @@ def trackObjects(objects, img_bgr, yolo, class_aliases, frame_number):
             return True
 
 def loadModel():
-    yolo = load_yolo(Path("./Computer Vision/trials/trial5-manual-auto/weights/best.pt"))
+    yolo = load_yolo(Path("../Computer Vision/trials/trial5-manual-auto/weights/best.pt"))
     class_aliases = parse_class_aliases(
         "bottle",
         "can",
