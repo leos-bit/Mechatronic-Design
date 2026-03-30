@@ -74,3 +74,25 @@ Keep these values consistent between scripts when switching control modes.
 ## Existing CV README
 Detailed CV detection/labeling commands remain in:
 - `Computer Vision/README.md`
+
+
+## RoboFlow API Callling
+- client = InferenceHTTPClient(
+    api_url="https://serverless.roboflow.com",
+    api_key="oPusoqJbAhSfo6zbicdc"
+  )
+
+
+- result = client.run_workflow(
+    workspace_name="leos-workspace-qswhy",
+    workflow_id="yolov11",
+
+- export ROBOFLOW_API_KEY="oPusoqJbAhSfo6zbicd"
+  export ROBOFLOW_WORKSPACE="leos-workspace-qswhy"
+  export ROBOFLOW_WORKFLOW_ID="yolov11"
+  export ROBOFLOW_INPUT_NAME="image"
+- python3 motorControl.py    export ROBOFLOW_API_KEY="oPusoqJbAhSfo6zbicd"
+  export ROBOFLOW_WORKSPACE="leos-workspace-qswhy"
+  export ROBOFLOW_WORKFLOW_ID="yolov11"
+  export ROBOFLOW_INPUT_NAME="image"
+  python3 liveRoboflowView.py
