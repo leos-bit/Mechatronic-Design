@@ -7,6 +7,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+try:
+    from inference_sdk import InferenceHTTPClient
+except ImportError:
+    InferenceHTTPClient = None
 
 CURRENT_DIR = Path(__file__).resolve().parent
 MOTOR_DEMO_DIR = CURRENT_DIR / "Motor Control" / "board_demo"
@@ -23,15 +27,15 @@ sys.path.insert(0, str(IK_DIR))
 import ros_robot_controller_sdk as rrc
 import takePhoto
 import inverseKinematics
-from belt_objects import *
+from belt_objects import load_yolo, parse_class_aliases, detect_objects_in_frame, map_yolo_label
 
 # Global control variables
 running = True
-servo_ids = [3, 4, 5]  # IDs of the three bus servos
+servo_ids = [3, 5, 7]  # IDs of the three bus servos in IK order
 MOVE_DURATION_S = 0.3
-SERVO_ZERO_OFFSETS_DEG = {3: 87.0, 4: 90.0, 5: 90.0}
-SERVO_DIRECTIONS = {3: -1.0, 4: -1.0, 5: -1.0}
-SERVO_ANGLE_SCALES = {3: 1.0, 4: 1.0, 5: 1.0}
+SERVO_ZERO_OFFSETS_DEG = {3: 87.0, 5: 90.0, 7: 90.0}
+SERVO_DIRECTIONS = {3: -1.0, 5: -1.0, 7: -1.0}
+SERVO_ANGLE_SCALES = {3: 1.0, 5: 1.0, 7: 1.0}
 SERVO_STARTUP_ENABLE_DELAY_S = 0.35
 
 # Board initialization
@@ -52,8 +56,10 @@ cv_model = None
 cv_class_aliases = None
 cv_homography = None
 cv_ready = False
+rf_client = None
 
 # CV inference config
+CV_BACKEND = "roboflow_workflow"  # roboflow_workflow | yolo_local
 CV_MODEL_PATH = CURRENT_DIR / "Computer Vision" / "trials" / "trial5-manual-auto" / "weights" / "best.pt"
 CV_CONF = 0.35
 CV_IOU = 0.6
@@ -73,6 +79,13 @@ CV_WORLD_X_BIAS_MM = 0.0
 CV_WORLD_Y_BIAS_MM = 0.0
 CV_FALLBACK_TO_CENTROID = False
 CV_Y_ONLY_MODE = True
+CV_ROBOFLOW_API_URL = os.getenv("ROBOFLOW_API_URL", "https://serverless.roboflow.com")
+CV_ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY", "")
+CV_ROBOFLOW_WORKSPACE = os.getenv("ROBOFLOW_WORKSPACE", "leos-workspace-qswhy")
+CV_ROBOFLOW_WORKFLOW_ID = os.getenv("ROBOFLOW_WORKFLOW_ID", "yolov11")
+CV_ROBOFLOW_INPUT_NAME = os.getenv("ROBOFLOW_INPUT_NAME", "image")
+CV_ROBOFLOW_USE_CACHE = os.getenv("ROBOFLOW_USE_CACHE", "true").lower() in ("1", "true", "yes")
+CV_WORKFLOW_IMAGE_PATH = CURRENT_DIR / "cameraCode" / "photos" / "default.jpg"
 
 LOOP_DELAY_S = 0.03
 
@@ -147,18 +160,34 @@ def _parse_xy_pair(value):
 
 
 def initialize_cv():
-    global cv_model, cv_class_aliases, cv_homography, cv_ready
+    global cv_model, cv_class_aliases, cv_homography, cv_ready, rf_client
     try:
-        if not CV_MODEL_PATH.exists():
-            print(f"[CV] Model not found: {CV_MODEL_PATH}")
-            cv_ready = False
-            return
-        cv_model = load_yolo(CV_MODEL_PATH)
         cv_class_aliases = parse_class_aliases(
             "bottle",
             "can",
             "6-pack,six-pack,six_pack,6pack",
         )
+        if CV_BACKEND == "yolo_local":
+            if not CV_MODEL_PATH.exists():
+                print(f"[CV] Model not found: {CV_MODEL_PATH}")
+                cv_ready = False
+                return
+            cv_model = load_yolo(CV_MODEL_PATH)
+        elif CV_BACKEND == "roboflow_workflow":
+            if InferenceHTTPClient is None:
+                print("[CV] inference_sdk is not installed")
+                cv_ready = False
+                return
+            if not CV_ROBOFLOW_API_KEY:
+                print("[CV] ROBOFLOW_API_KEY is not set")
+                cv_ready = False
+                return
+            rf_client = InferenceHTTPClient(
+                api_url=CV_ROBOFLOW_API_URL,
+                api_key=CV_ROBOFLOW_API_KEY,
+            )
+        else:
+            raise ValueError(f"Unsupported CV_BACKEND: {CV_BACKEND}")
         if CV_USE_HOMOGRAPHY:
             src = _parse_points(CV_HOMOGRAPHY_SRC)
             dst = _parse_points(CV_HOMOGRAPHY_DST)
@@ -166,13 +195,108 @@ def initialize_cv():
                 h, _ = cv2.findHomography(src, dst, method=0)
                 cv_homography = h
         cv_ready = True
-        print(f"[CV] Initialized with model: {CV_MODEL_PATH}")
+        if CV_BACKEND == "yolo_local":
+            print(f"[CV] Initialized YOLO model: {CV_MODEL_PATH}")
+        else:
+            print(
+                f"[CV] Initialized Roboflow workflow backend: "
+                f"{CV_ROBOFLOW_WORKSPACE}/{CV_ROBOFLOW_WORKFLOW_ID}"
+            )
     except Exception as e:
         print(f"[CV] Initialization failed: {e}")
         cv_ready = False
 
 
-def _detect_with_cv(frame_bgr):
+def _project_world_from_centroid(cx, cy):
+    if cv_homography is None:
+        return None
+    vec = np.array([[[float(cx), float(cy)]]], dtype=np.float32)
+    mapped = cv2.perspectiveTransform(vec, cv_homography)
+    return (float(mapped[0, 0, 0]), float(mapped[0, 0, 1]))
+
+
+def _normalize_label(label):
+    return map_yolo_label(label, cv_class_aliases) if cv_class_aliases is not None else str(label)
+
+
+def _workflow_prediction_to_detection(prediction):
+    label = _normalize_label(prediction.get("class") or prediction.get("label") or "unknown")
+    confidence = float(prediction.get("confidence", prediction.get("score", 0.0)))
+    x = prediction.get("x")
+    y = prediction.get("y")
+    w = prediction.get("width", prediction.get("w"))
+    h = prediction.get("height", prediction.get("h"))
+
+    if all(v is not None for v in (x, y, w, h)):
+        x1 = int(round(float(x) - (float(w) / 2.0)))
+        y1 = int(round(float(y) - (float(h) / 2.0)))
+        x2 = int(round(float(x) + (float(w) / 2.0)))
+        y2 = int(round(float(y) + (float(h) / 2.0)))
+        cx = int(round(float(x)))
+        cy = int(round(float(y)))
+    else:
+        x1 = prediction.get("x1", prediction.get("left"))
+        y1 = prediction.get("y1", prediction.get("top"))
+        x2 = prediction.get("x2", prediction.get("right"))
+        y2 = prediction.get("y2", prediction.get("bottom"))
+        if any(v is None for v in (x1, y1, x2, y2)):
+            return None
+        x1 = int(round(float(x1)))
+        y1 = int(round(float(y1)))
+        x2 = int(round(float(x2)))
+        y2 = int(round(float(y2)))
+        cx = int(round((x1 + x2) / 2.0))
+        cy = int(round((y1 + y2) / 2.0))
+
+    world_xy = _project_world_from_centroid(cx, cy)
+    return {
+        "bbox_xyxy": (x1, y1, x2, y2),
+        "centroid": (cx, cy),
+        "class": label,
+        "confidence": confidence,
+        "track_id": None,
+        "world": world_xy,
+        "world_units": CV_HOMOGRAPHY_UNITS if world_xy is not None else None,
+        "mask_polygon": None,
+    }
+
+
+def _collect_predictions(node, out):
+    if isinstance(node, dict):
+        preds = node.get("predictions")
+        if isinstance(preds, list):
+            for pred in preds:
+                if isinstance(pred, dict):
+                    out.append(pred)
+        for value in node.values():
+            _collect_predictions(value, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_predictions(item, out)
+
+
+def _detect_with_roboflow_workflow(frame_bgr):
+    CV_WORKFLOW_IMAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(CV_WORKFLOW_IMAGE_PATH), frame_bgr):
+        raise RuntimeError(f"Failed to write workflow input image: {CV_WORKFLOW_IMAGE_PATH}")
+    data = rf_client.run_workflow(
+        workspace_name=CV_ROBOFLOW_WORKSPACE,
+        workflow_id=CV_ROBOFLOW_WORKFLOW_ID,
+        images={CV_ROBOFLOW_INPUT_NAME: str(CV_WORKFLOW_IMAGE_PATH)},
+        use_cache=CV_ROBOFLOW_USE_CACHE,
+    )
+    predictions = []
+    _collect_predictions(data, predictions)
+    detections = []
+    for prediction in predictions:
+        det = _workflow_prediction_to_detection(prediction)
+        if det is not None and det["class"] != "unknown":
+            detections.append(det)
+    detections.sort(key=lambda det: det.get("confidence", 0.0), reverse=True)
+    return detections
+
+
+def _detect_with_yolo(frame_bgr):
     return detect_objects_in_frame(
         frame_bgr=frame_bgr,
         yolo_model=cv_model,
@@ -189,6 +313,10 @@ def _detect_with_cv(frame_bgr):
     )
 
 
+def _detect_with_cv(frame_bgr):
+    if CV_BACKEND == "roboflow_workflow":
+        return _detect_with_roboflow_workflow(frame_bgr)
+    return _detect_with_yolo(frame_bgr)
 def _choose_by_pixel_centroid(detections, centroid_xy):
     if not detections:
         return None
@@ -212,6 +340,8 @@ def _annotate_target(frame_bgr, detections, target, requested_centroid=None):
         score = det["confidence"]
         color = (0, 200, 255) if det is target else (0, 255, 0)
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        if det.get("mask_polygon") is not None:
+            cv2.polylines(out, [det["mask_polygon"]], True, color, 1)
         cv2.circle(out, (cx, cy), 4, (0, 0, 255), -1)
         cv2.putText(
             out,
@@ -254,7 +384,7 @@ def _choose_target(detections, frame_center):
 
 def _centroid_to_servo_angles(cx, cy, width, height):
     if width <= 0 or height <= 0:
-        return {3: SERVO_NEUTRAL, 4: SERVO_NEUTRAL, 5: SERVO_NEUTRAL}
+        return {3: SERVO_NEUTRAL, 5: SERVO_NEUTRAL, 7: SERVO_NEUTRAL}
     dx_norm = (cx - (width / 2.0)) / max(width / 2.0, 1.0)
     dy_norm = (cy - (height / 2.0)) / max(height / 2.0, 1.0)
     if CV_Y_ONLY_MODE:
@@ -266,8 +396,8 @@ def _centroid_to_servo_angles(cx, cy, width, height):
 
     return {
         3: float(np.clip(angle_3, 0, 240)),
-        4: float(np.clip(angle_4, 0, 240)),
-        5: float(np.clip(angle_5, 0, 240)),
+        5: float(np.clip(angle_4, 0, 240)),
+        7: float(np.clip(angle_5, 0, 240)),
     }
 
 
@@ -283,36 +413,23 @@ def _world_to_servo_angles(world_xy):
     angles = inverseKinematics.getAngles(x, y, z)
     if angles is None:
         return None
-    return {3: float(angles[0]), 4: float(angles[1]), 5: float(angles[2])}
+    return {3: float(angles[0]), 5: float(angles[1]), 7: float(angles[2])}
 
 
 def analyze_photo(image):
     try:
         if image is None:
             print("[ANALYSIS] No image to analyze")
-            return None, {3: 120, 4: 120, 5: 120}
+            return None, {3: 120, 5: 120, 7: 120}
 
         image_with_centroid = image.copy()
-        neutral = {3: SERVO_NEUTRAL, 4: SERVO_NEUTRAL, 5: SERVO_NEUTRAL}
+        neutral = {3: SERVO_NEUTRAL, 5: SERVO_NEUTRAL, 7: SERVO_NEUTRAL}
 
         if not cv_ready:
             print("[ANALYSIS] CV not initialized, using neutral servo positions")
             return image_with_centroid, neutral
 
-        detections = detect_objects_in_frame(
-            frame_bgr=image,
-            yolo_model=cv_model,
-            class_aliases=cv_class_aliases,
-            imgsz=CV_IMGSZ,
-            conf=CV_CONF,
-            iou=CV_IOU,
-            tracker_type=CV_TRACKER_TYPE,
-            byte_track_config=CV_BYTE_TRACK_CONFIG,
-            centroid_mode=CV_CENTROID_MODE,
-            enable_six_pack_heuristic=CV_ENABLE_SIX_PACK_HEURISTIC,
-            homography=cv_homography,
-            homography_units=CV_HOMOGRAPHY_UNITS,
-        )
+        detections = _detect_with_cv(image)
 
         h, w = image.shape[:2]
         frame_center = (w / 2.0, h / 2.0)
@@ -323,6 +440,8 @@ def analyze_photo(image):
             label = det["class"]
             score = det["confidence"]
             cv2.rectangle(image_with_centroid, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            if det.get("mask_polygon") is not None:
+                cv2.polylines(image_with_centroid, [det["mask_polygon"]], True, (0, 200, 255), 1)
             cv2.circle(image_with_centroid, (cx, cy), 4, (0, 0, 255), -1)
             cv2.putText(
                 image_with_centroid,
@@ -376,7 +495,7 @@ def analyze_photo(image):
 
     except Exception as e:
         print(f"Error analyzing photo: {e}")
-        return image, {3: 120, 4: 120, 5: 120}
+        return image, {3: 120, 5: 120, 7: 120}
 
 
 def move_servos(servo_positions):
@@ -466,7 +585,7 @@ if __name__ == '__main__':
                 if not cv_ready:
                     raise RuntimeError("CV not initialized; cannot detect centroids")
 
-                detections = detect_objects_in_frame(image, cv_model, cv_class_aliases)
+                detections = _detect_with_cv(image)
                 if not detections:
                     print("[PHOTO] No detections found in photo")
                     continue
@@ -576,13 +695,6 @@ if __name__ == '__main__':
                 print(f"Error disabling servos: {e}")
         
         # Close camera
-        if video_cap is not None:
-            try:
-                video_cap.release()
-                print("Recorded video source closed")
-            except Exception as e:
-                print(f"Error closing recorded video source: {e}")
-
         if camera is not None:
             try:
                 takePhoto.closeCamera(camera)

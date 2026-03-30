@@ -21,7 +21,7 @@ def load_calibration():
     if not CALIBRATION_PATH.exists():
         raise FileNotFoundError(f"Calibration file not found: {CALIBRATION_PATH}")
     data = json.loads(CALIBRATION_PATH.read_text())
-    matrix = np.asarray(data["affine_pixel_to_world_xy"], dtype=np.float32)
+    matrix = np.asarray(data["affine_zeroed_pixel_to_robot_command_xy"], dtype=np.float32)
     tag_id = int(data.get("aruco_tag_id", 0))
     dict_name = data.get("aruco_dict", "DICT_ARUCO_ORIGINAL")
     zero_pixel_xy = tuple(data.get("zero_pixel_xy", [0.0, 0.0]))
@@ -77,8 +77,8 @@ def detect_tag_center(frame_bgr, tag_id, dictionary, detector=None, parameters=N
     return (cx, cy), annotated
 
 
-def pixel_to_robot_xy(matrix, pixel_xy):
-    u, v = pixel_xy
+def zeroed_pixel_to_robot_xy(matrix, zeroed_pixel_xy):
+    u, v = zeroed_pixel_xy
     vec = np.array([u, v, 1.0], dtype=np.float32)
     xy = matrix @ vec
     return float(xy[0]), float(xy[1])
@@ -119,11 +119,16 @@ def main():
             )
 
             if center_xy is not None:
-                world_x, world_y = pixel_to_robot_xy(matrix, center_xy)
+                zeroed_pixel_xy = (
+                    center_xy[0] - zero_pixel_xy[0],
+                    center_xy[1] - zero_pixel_xy[1],
+                )
+                robot_x, robot_y = zeroed_pixel_to_robot_xy(matrix, zeroed_pixel_xy)
                 text = (
                     f"pixel=({center_xy[0]:.1f},{center_xy[1]:.1f}) "
                     f"zero_pixel=({zero_pixel_xy[0]:.1f},{zero_pixel_xy[1]:.1f}) "
-                    f"world=({world_x:.1f},{world_y:.1f}) mm"
+                    f"delta_pixel=({zeroed_pixel_xy[0]:.1f},{zeroed_pixel_xy[1]:.1f}) "
+                    f"robot=({robot_x:.1f},{robot_y:.1f}) mm"
                 )
                 cv2.putText(
                     annotated,
