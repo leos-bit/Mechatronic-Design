@@ -3,6 +3,10 @@ import time
 import sys
 import os
 import threading
+import json
+
+import cv2
+import numpy as np
 
 # Add path to access ros_robot_controller_sdk and takePhoto
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + '/Motor Control/board_demo')
@@ -15,7 +19,7 @@ import inverseKinematics
 
 # Global control variables
 running = True
-servo_ids = [3, 7, 5]  # IDs of the three bus servos in IK order
+servo_ids = [3, 5, 7]  # IDs of the three bus servos in IK order
 MOVE_DURATION_S = 0.3
 SERVO_ZERO_OFFSETS_DEG = {3: 90.0, 5: 90.0, 7: 90.0}
 SERVO_DIRECTIONS = {3: -1.0, 5: -1.0, 7: -1.0}
@@ -38,6 +42,12 @@ POSITION_TOLERANCE_RAW = 5
 FEEDBACK_MAX_ITERS = 10
 FEEDBACK_SETTLE_S = 0.15
 FEEDBACK_GAIN = 1.0
+CAMERA_XYZ_MAX_ITERS = 10
+CAMERA_XYZ_GAIN = 0.2
+CAMERA_XYZ_TOLERANCE_MM = 12.0
+CAMERA_SETTLE_S = 0.4
+CAMERA_INTRINSICS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cameraCode", "camera_intrinsics.json")
+CAMERA_3D_CALIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cameraCode", "aruco_end_effector_calibration_3d.json")
 
 
 # Board initialization
@@ -53,6 +63,17 @@ except Exception as e:
 
 motion_lock = threading.Lock()
 sequence_running = False
+camera = None
+target_format = None
+camera_matrix = None
+dist_coeffs = None
+camera_to_robot_rotation = None
+camera_to_robot_translation = None
+aruco_tag_id = 0
+aruco_tag_size_mm = 20.0
+aruco_dictionary = None
+aruco_detector = None
+aruco_parameters = None
 
 def read_servos(servo_ids):
     for servo_id in servo_ids:
@@ -62,6 +83,101 @@ def read_servos(servo_ids):
                 print(f"Servo {servo_id} current position: {pos[0]}")
         except Exception as e:
             print(f"Could not read position for servo {servo_id}: {e}")
+
+
+def initialize_camera_once():
+    global camera, target_format
+    if camera is None or target_format is None:
+        print("Initializing camera...")
+        camera, target_format = takePhoto.initialzeCamera()
+        print("Camera initialized successfully")
+
+
+def load_camera_feedback_calibration():
+    global camera_matrix, dist_coeffs, camera_to_robot_rotation, camera_to_robot_translation
+    global aruco_tag_id, aruco_tag_size_mm, aruco_dictionary, aruco_detector, aruco_parameters
+
+    if camera_matrix is not None:
+        return
+
+    intrinsics = json.loads(open(CAMERA_INTRINSICS_PATH, "r").read())
+    calib3d = json.loads(open(CAMERA_3D_CALIB_PATH, "r").read())
+
+    camera_matrix = np.asarray(intrinsics["camera_matrix"], dtype=np.float32)
+    dist_coeffs = np.asarray(intrinsics["dist_coeffs"], dtype=np.float32)
+    camera_to_robot_rotation = np.asarray(calib3d["camera_to_robot_rotation"], dtype=np.float32)
+    camera_to_robot_translation = np.asarray(calib3d["camera_to_robot_translation_mm"], dtype=np.float32).reshape(3)
+    aruco_tag_id = int(calib3d.get("aruco_tag_id", 0))
+    aruco_tag_size_mm = float(calib3d.get("aruco_tag_size_mm", 20.0))
+    dict_name = calib3d.get("aruco_dict", "DICT_ARUCO_ORIGINAL")
+
+    if not hasattr(cv2, "aruco"):
+        raise RuntimeError("OpenCV ArUco module is not available")
+    dict_id = getattr(cv2.aruco, dict_name)
+    if hasattr(cv2.aruco, "getPredefinedDictionary"):
+        aruco_dictionary = cv2.aruco.getPredefinedDictionary(dict_id)
+    elif hasattr(cv2.aruco, "Dictionary_get"):
+        aruco_dictionary = cv2.aruco.Dictionary_get(dict_id)
+    else:
+        raise RuntimeError("No supported ArUco dictionary API found")
+
+    if hasattr(cv2.aruco, "DetectorParameters"):
+        aruco_parameters = cv2.aruco.DetectorParameters()
+    elif hasattr(cv2.aruco, "DetectorParameters_create"):
+        aruco_parameters = cv2.aruco.DetectorParameters_create()
+    else:
+        aruco_parameters = None
+
+    if hasattr(cv2.aruco, "ArucoDetector"):
+        aruco_detector = cv2.aruco.ArucoDetector(aruco_dictionary, aruco_parameters)
+
+
+def estimate_robot_xyz_from_camera():
+    initialize_camera_once()
+    load_camera_feedback_calibration()
+
+    frame = takePhoto.takePhoto(camera, target_format, save_photo=False)
+    if frame is None:
+        return None
+
+    if aruco_detector is not None:
+        corners, ids, _ = aruco_detector.detectMarkers(frame)
+    elif hasattr(cv2.aruco, "detectMarkers"):
+        corners, ids, _ = cv2.aruco.detectMarkers(frame, aruco_dictionary, parameters=aruco_parameters)
+    else:
+        raise RuntimeError("No supported ArUco detectMarkers API found in this OpenCV build")
+
+    if ids is None:
+        return None
+    ids_flat = ids.flatten().tolist()
+    if aruco_tag_id not in ids_flat:
+        return None
+
+    idx = ids_flat.index(aruco_tag_id)
+    marker_corners = corners[idx][0].astype(np.float32)
+    half = aruco_tag_size_mm / 2.0
+    object_points = np.array(
+        [
+            [-half, half, 0.0],
+            [half, half, 0.0],
+            [half, -half, 0.0],
+            [-half, -half, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    ok, _rvec, tvec = cv2.solvePnP(
+        object_points,
+        marker_corners,
+        camera_matrix,
+        dist_coeffs,
+        flags=cv2.SOLVEPNP_IPPE_SQUARE,
+    )
+    if not ok:
+        return None
+
+    camera_point = np.asarray(tvec, dtype=np.float32).reshape(3)
+    robot_point = camera_to_robot_rotation @ camera_point + camera_to_robot_translation
+    return float(robot_point[0]), float(robot_point[1]), float(robot_point[2])
 
 
 def logical_angle_to_raw(servo_id, logical_angle):
@@ -170,7 +286,7 @@ def set_torque(state, servo_id=None):
                 time.sleep(TORQUE_ON_SETTLE_S)
     if state == "on" and servo_id is None and TORQUE_ON_AUTO_HOLD_ZERO:
         print("Applying post-torque zero hold (a,0,0,0)")
-        move_servos({3: 0.0, 7: 0.0, 5: 0.0})
+        move_servos({3: 0.0, 5: 0.0, 7: 0.0})
 
 
 def build_square_points(cx, cy, z, side_len):
@@ -264,11 +380,51 @@ def run_n_path(x_mm=NPATH_X_MM, y_mm=NPATH_Y_MM, dwell_s=SQUARE_DWELL_S):
         sequence_running = False
 
 
+def run_camera_xyz_feedback(target_xyz):
+    desired = np.asarray(target_xyz, dtype=np.float32)
+    commanded = np.asarray(target_xyz, dtype=np.float32)
+    print(f"Camera-closed-loop target xyz=({desired[0]:.1f}, {desired[1]:.1f}, {desired[2]:.1f})")
+
+    for iteration in range(1, CAMERA_XYZ_MAX_ITERS + 1):
+        angles = inverseKinematics.getAngles(float(commanded[0]), float(commanded[1]), float(commanded[2]))
+        print(
+            f"  Iter {iteration} command xyz=({commanded[0]:.1f}, {commanded[1]:.1f}, {commanded[2]:.1f}) "
+            #f"-> IK {angles}"
+        )
+        if angles is None:
+            print("  No valid IK solution for corrected command; aborting")
+            return
+
+        move_servos({3: angles[0], 5: angles[1], 7: angles[2]}, update_activity=False)
+        time.sleep(CAMERA_SETTLE_S)
+
+        measured = estimate_robot_xyz_from_camera()
+        if measured is None:
+            print("  Camera could not estimate ArUco robot XYZ; aborting")
+            return
+
+        measured_vec = np.asarray(measured, dtype=np.float32)
+        error = desired - measured_vec
+        error_norm = float(np.linalg.norm(error))
+        print(
+            f"  Measured xyz=({measured_vec[0]:.1f}, {measured_vec[1]:.1f}, {measured_vec[2]:.1f}) "
+            f"error=({error[0]:.1f}, {error[1]:.1f}, {error[2]:.1f}) |e|={error_norm:.1f}"
+        )
+        if error_norm <= CAMERA_XYZ_TOLERANCE_MM:
+            print("  Camera feedback converged")
+            return
+
+        commanded = commanded + (CAMERA_XYZ_GAIN * error)
+
+    print("  Camera feedback loop reached max iterations without converging")
+
+
 def parse_control_input(text):
     """
     Supported formats:
       - "x, y, z" (default XYZ mode for backward compatibility)
       - "x, x, y, z" (explicit XYZ mode)
+      - "c, x, y, z" (camera-closed-loop XYZ correction using ArUco)
       - "a, a3, a5, a7" (direct motor angles for servos 3/5/7)
       - "t, on|off[, servo_id]" (manual torque control)
       - "sq, cx, cy, z, side_len[, dwell_s]" (run 4-point square via IK)
@@ -285,6 +441,12 @@ def parse_control_input(text):
             raise ValueError("xyz mode requires: x, x_val, y_val, z_val")
         x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
         return ("xyz", (x, y, z))
+
+    if mode_token in ("c", "cam", "camera"):
+        if len(parts) != 4:
+            raise ValueError("camera mode requires: c, x_val, y_val, z_val")
+        x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+        return ("camera_xyz", (x, y, z))
 
     if mode_token in ("a", "ang", "angle", "angles"):
         if len(parts) != 4:
@@ -359,6 +521,7 @@ if __name__ == '__main__':
         print("Starting main loop. Press Ctrl+C to stop.")
         print("Input formats:")
         print("  XYZ IK:     x,100,0,120   or   100,0,120")
+        print("  Camera XYZ: c,100,0,-550  (ArUco feedback-corrected XYZ)")
         print("  Angles:     a,10,0,-5     (maps directly to servos 3,5,7)")
         print("  Torque:     t,on          or   t,off,3")
         print("  Square IK:  sq,0,0,-550,40,0.6")
@@ -380,6 +543,8 @@ if __name__ == '__main__':
                     else:
                         servo_positions = {3: angles[0], 5: angles[1], 7: angles[2]}
                         move_servos(servo_positions)
+                elif mode == "camera_xyz":
+                    run_camera_xyz_feedback(values)
                 else:
                     if mode == "angles":
                         a3, a4, a5 = values

@@ -574,14 +574,6 @@ if __name__ == '__main__':
                     print(f"Servo {servo_id} torque OFF")
             except Exception as e:
                 print(f"Error disabling servos: {e}")
-        
-        # Close camera
-        if video_cap is not None:
-            try:
-                video_cap.release()
-                print("Recorded video source closed")
-            except Exception as e:
-                print(f"Error closing recorded video source: {e}")
 
         if camera is not None:
             try:

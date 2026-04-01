@@ -55,7 +55,7 @@ def loadModel():
 if __name__ == "__main__":
     yolo, class_aliases = loadModel()
     objects = []
-    video_path = "./Computer Vision/BlankVideo.mov"
+    video_path = "/home/collector/Documents/deltaArmControl/Mechatronic-Design/scheduler/IMG_1055.MOV"
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError("Failed to open video.")

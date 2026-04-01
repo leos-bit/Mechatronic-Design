@@ -415,11 +415,7 @@ def detect_objects_in_frame(
     yolo_model,
     class_aliases,
     imgsz=640,
-<<<<<<< HEAD
-    conf=0.20,
-=======
     conf=0.35,
->>>>>>> 862fc2ea743f06ffae296121bb474039693f9401
     iou=0.6,
     tracker_type="simple",
     byte_track_config="bytetrack.yaml",
