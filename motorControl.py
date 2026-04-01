@@ -457,6 +457,8 @@ if __name__ == '__main__':
                 photo_path = Path(args.photo_path)
                 photo_path.parent.mkdir(parents=True, exist_ok=True)
 
+                input("type anything to run next iteration")
+                
                 image = capture_photo(camera, target_format)
                 if image is None:
                     raise RuntimeError("No image captured from camera")

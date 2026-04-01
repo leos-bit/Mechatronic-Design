@@ -509,6 +509,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", required=True, help="Absolute path to video file")
     parser.add_argument("--show", action="store_true", help="Show debug window")
+    parser.add_argument("--save-video", help="Optional path to save annotated output video (.mp4)")
     parser.add_argument("--model", help="Optional ONNX classifier path")
     parser.add_argument("--yolo-model", help="Optional YOLOv8 model path (.pt)")
     parser.add_argument("--no-track", action="store_true", help="Disable simple tracking")
@@ -564,6 +565,20 @@ def main():
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError("Failed to open video.")
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    input_fps = float(cap.get(cv2.CAP_PROP_FPS))
+    if input_fps <= 0:
+        input_fps = 30.0
+
+    writer = None
+    if args.save_video:
+        output_path = Path(args.save_video)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(output_path), fourcc, input_fps, (frame_width, frame_height))
+        if not writer.isOpened():
+            raise RuntimeError(f"Failed to open output video for writing: {output_path}")
 
     if yolo is None and net is None:
         raise RuntimeError("No model provided. Use --yolo-model or --model.")
@@ -590,6 +605,7 @@ def main():
     frame_idx = 0
     paused = False
     frame = None
+    annotate_enabled = args.show or (writer is not None)
     while True:
         if not paused:
             ret, frame = cap.read()
@@ -646,7 +662,7 @@ def main():
                             min_aspect=args.six_pack_min_aspect,
                         )
 
-                    if args.debug_features and args.show:
+                    if args.debug_features and annotate_enabled:
                         aspect = w / max(h, 1)
                         perim = 2 * (w + h)
                         area = w * h
@@ -669,7 +685,7 @@ def main():
                     else:
                         mapped.append((cx, cy, label, conf))
 
-                    if args.show:
+                    if annotate_enabled:
                         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                         if centroid_contour is not None:
                             cv2.drawContours(frame, [centroid_contour], -1, (0, 200, 255), 1)
@@ -707,7 +723,7 @@ def main():
                     label = classify_with_model(net, roi)
                     results.append((cx, cy, label, 0.0))
 
-                    if args.show:
+                    if annotate_enabled:
                         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                         cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
                         cv2.putText(frame, label, (x, y - 5),
@@ -739,7 +755,7 @@ def main():
                         print(f"frame={frame_idx} centroid=({cx},{cy}) class={label} conf={conf:.2f}{track_msg}{world_msg}")
                     else:
                         print(f"frame={frame_idx} centroid=({cx},{cy}) class={label}{track_msg}{world_msg}")
-                    if args.show and world_xy is not None:
+                    if annotate_enabled and world_xy is not None:
                         cv2.putText(
                             frame,
                             f"{args.homography_units}=({world_xy[0]:.1f},{world_xy[1]:.1f})",
@@ -750,6 +766,9 @@ def main():
                             1,
                         )
 
+        if writer is not None and frame is not None:
+            writer.write(frame)
+
         if args.show:
             cv2.imshow("belt", frame)
             key = cv2.waitKey(1 if not paused else 30) & 0xFF
@@ -759,6 +778,8 @@ def main():
                 paused = not paused
 
     cap.release()
+    if writer is not None:
+        writer.release()
     if args.show:
         cv2.destroyAllWindows()
 
