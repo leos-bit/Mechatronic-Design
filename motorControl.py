@@ -219,34 +219,93 @@ def _normalize_label(label):
     return map_yolo_label(label, cv_class_aliases) if cv_class_aliases is not None else str(label)
 
 
+def _coerce_points_list(node):
+    if not isinstance(node, list):
+        return None
+    points = []
+    for item in node:
+        if isinstance(item, dict):
+            x = item.get("x")
+            y = item.get("y")
+            if x is None or y is None:
+                return None
+            points.append((float(x), float(y)))
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            points.append((float(item[0]), float(item[1])))
+        else:
+            return None
+    return points if len(points) >= 3 else None
+
+
+def _extract_polygon_contour(prediction):
+    candidates = [
+        prediction.get("points"),
+        prediction.get("polygon"),
+        prediction.get("vertices"),
+    ]
+    for candidate in candidates:
+        points = _coerce_points_list(candidate)
+        if points is not None:
+            contour = np.array(points, dtype=np.float32).reshape((-1, 1, 2))
+            return contour.astype(np.int32)
+
+    mask = prediction.get("mask")
+    if isinstance(mask, dict):
+        for key in ("points", "polygon", "vertices"):
+            points = _coerce_points_list(mask.get(key))
+            if points is not None:
+                contour = np.array(points, dtype=np.float32).reshape((-1, 1, 2))
+                return contour.astype(np.int32)
+    return None
+
+
+def _contour_to_bbox_centroid(contour):
+    moments = cv2.moments(contour)
+    if moments["m00"] <= 0:
+        return None
+    cx = int(round(moments["m10"] / moments["m00"]))
+    cy = int(round(moments["m01"] / moments["m00"]))
+    x, y, w, h = cv2.boundingRect(contour)
+    return (x, y, x + w, y + h), (cx, cy)
+
+
 def _workflow_prediction_to_detection(prediction):
     label = _normalize_label(prediction.get("class") or prediction.get("label") or "unknown")
     confidence = float(prediction.get("confidence", prediction.get("score", 0.0)))
-    x = prediction.get("x")
-    y = prediction.get("y")
-    w = prediction.get("width", prediction.get("w"))
-    h = prediction.get("height", prediction.get("h"))
-
-    if all(v is not None for v in (x, y, w, h)):
-        x1 = int(round(float(x) - (float(w) / 2.0)))
-        y1 = int(round(float(y) - (float(h) / 2.0)))
-        x2 = int(round(float(x) + (float(w) / 2.0)))
-        y2 = int(round(float(y) + (float(h) / 2.0)))
-        cx = int(round(float(x)))
-        cy = int(round(float(y)))
-    else:
-        x1 = prediction.get("x1", prediction.get("left"))
-        y1 = prediction.get("y1", prediction.get("top"))
-        x2 = prediction.get("x2", prediction.get("right"))
-        y2 = prediction.get("y2", prediction.get("bottom"))
-        if any(v is None for v in (x1, y1, x2, y2)):
+    contour = _extract_polygon_contour(prediction)
+    if contour is not None:
+        parsed = _contour_to_bbox_centroid(contour)
+        if parsed is None:
             return None
-        x1 = int(round(float(x1)))
-        y1 = int(round(float(y1)))
-        x2 = int(round(float(x2)))
-        y2 = int(round(float(y2)))
-        cx = int(round((x1 + x2) / 2.0))
-        cy = int(round((y1 + y2) / 2.0))
+        (x1, y1, x2, y2), (cx, cy) = parsed
+        mask_polygon = contour
+    else:
+        x = prediction.get("x")
+        y = prediction.get("y")
+        w = prediction.get("width", prediction.get("w"))
+        h = prediction.get("height", prediction.get("h"))
+
+        if all(v is not None for v in (x, y, w, h)):
+            x1 = int(round(float(x) - (float(w) / 2.0)))
+            y1 = int(round(float(y) - (float(h) / 2.0)))
+            x2 = int(round(float(x) + (float(w) / 2.0)))
+            y2 = int(round(float(y) + (float(h) / 2.0)))
+            cx = int(round(float(x)))
+            cy = int(round(float(y)))
+        else:
+            x1 = prediction.get("x1", prediction.get("left"))
+            y1 = prediction.get("y1", prediction.get("top"))
+            x2 = prediction.get("x2", prediction.get("right"))
+            y2 = prediction.get("y2", prediction.get("bottom"))
+            if any(v is None for v in (x1, y1, x2, y2)):
+                return None
+            x1 = int(round(float(x1)))
+            y1 = int(round(float(y1)))
+            x2 = int(round(float(x2)))
+            y2 = int(round(float(y2)))
+            cx = int(round((x1 + x2) / 2.0))
+            cy = int(round((y1 + y2) / 2.0))
+        mask_polygon = None
 
     world_xy = _project_world_from_centroid(cx, cy)
     return {
@@ -257,7 +316,7 @@ def _workflow_prediction_to_detection(prediction):
         "track_id": None,
         "world": world_xy,
         "world_units": CV_HOMOGRAPHY_UNITS if world_xy is not None else None,
-        "mask_polygon": None,
+        "mask_polygon": mask_polygon,
     }
 
 

@@ -75,24 +75,33 @@ Keep these values consistent between scripts when switching control modes.
 Detailed CV detection/labeling commands remain in:
 - `Computer Vision/README.md`
 
+## 4) Roboflow Workflow Runtime (Pi)
+Set the Roboflow environment variables on the Raspberry Pi:
 
-## RoboFlow API Callling
-- client = InferenceHTTPClient(
-    api_url="https://serverless.roboflow.com",
-    api_key="oPusoqJbAhSfo6zbicdc"
-  )
+```bash
+export ROBOFLOW_API_URL="https://serverless.roboflow.com"
+export ROBOFLOW_API_KEY="oPusoqJbAhSfo6zbicdc"
+export ROBOFLOW_WORKSPACE="leos-workspace-qswhy"
+export ROBOFLOW_WORKFLOW_ID="yolov11"
+export ROBOFLOW_INPUT_NAME="image"
+export ROBOFLOW_USE_CACHE="false"
+```
 
+### Live camera view with workflow detections
+Use this to verify the camera feed, classes, polygons, and centroids:
 
-- result = client.run_workflow(
-    workspace_name="leos-workspace-qswhy",
-    workflow_id="yolov11",
+```bash
+python3 liveRoboflowView.py
+```
 
-- export ROBOFLOW_API_KEY="oPusoqJbAhSfo6zbicd"
-  export ROBOFLOW_WORKSPACE="leos-workspace-qswhy"
-  export ROBOFLOW_WORKFLOW_ID="yolov11"
-  export ROBOFLOW_INPUT_NAME="image"
-- python3 motorControl.py    export ROBOFLOW_API_KEY="oPusoqJbAhSfo6zbicd"
-  export ROBOFLOW_WORKSPACE="leos-workspace-qswhy"
-  export ROBOFLOW_WORKFLOW_ID="yolov11"
-  export ROBOFLOW_INPUT_NAME="image"
-  python3 liveRoboflowView.py
+### Robotic sorting with Roboflow workflow backend
+`motorControl.py` already supports the Roboflow workflow backend. Run:
+
+```bash
+python3 motorControl.py
+```
+
+Notes:
+- `liveRoboflowView.py` is the safest first test because it only visualizes detections.
+- `motorControl.py` uses the same environment variables and can map detections into world coordinates for robot motion.
+- If your workflow returns SAM 3 polygons, the code computes centroids from the mask geometry instead of the bounding box center.

@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 try:
     from inference_sdk import InferenceHTTPClient
@@ -53,9 +54,73 @@ def collect_predictions(node, out):
             collect_predictions(item, out)
 
 
+def coerce_points_list(node):
+    if not isinstance(node, list):
+        return None
+    points = []
+    for item in node:
+        if isinstance(item, dict):
+            x = item.get("x")
+            y = item.get("y")
+            if x is None or y is None:
+                return None
+            points.append((float(x), float(y)))
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            points.append((float(item[0]), float(item[1])))
+        else:
+            return None
+    return points if len(points) >= 3 else None
+
+
+def extract_polygon_contour(prediction):
+    candidates = [
+        prediction.get("points"),
+        prediction.get("polygon"),
+        prediction.get("vertices"),
+    ]
+    for candidate in candidates:
+        points = coerce_points_list(candidate)
+        if points is not None:
+            contour = np.array(points, dtype=np.float32).reshape((-1, 1, 2))
+            return contour.astype(np.int32)
+
+    mask = prediction.get("mask")
+    if isinstance(mask, dict):
+        for key in ("points", "polygon", "vertices"):
+            points = coerce_points_list(mask.get(key))
+            if points is not None:
+                contour = np.array(points, dtype=np.float32).reshape((-1, 1, 2))
+                return contour.astype(np.int32)
+    return None
+
+
+def contour_to_bbox_centroid(contour):
+    moments = cv2.moments(contour)
+    if moments["m00"] <= 0:
+        return None
+    cx = int(round(moments["m10"] / moments["m00"]))
+    cy = int(round(moments["m01"] / moments["m00"]))
+    x, y, w, h = cv2.boundingRect(contour)
+    return (x, y, x + w, y + h), (cx, cy)
+
+
 def prediction_to_overlay(prediction):
     label = normalize_label(prediction.get("class") or prediction.get("label") or "unknown")
     conf = float(prediction.get("confidence", prediction.get("score", 0.0)))
+    contour = extract_polygon_contour(prediction)
+    if contour is not None:
+        parsed = contour_to_bbox_centroid(contour)
+        if parsed is None:
+            return None
+        bbox, centroid = parsed
+        return {
+            "label": label,
+            "confidence": conf,
+            "bbox": bbox,
+            "centroid": centroid,
+            "mask_polygon": contour,
+        }
+
     x = prediction.get("x")
     y = prediction.get("y")
     w = prediction.get("width", prediction.get("w"))
@@ -68,7 +133,7 @@ def prediction_to_overlay(prediction):
         y1 = int(round(float(y) - (float(h) / 2.0)))
         x2 = int(round(float(x) + (float(w) / 2.0)))
         y2 = int(round(float(y) + (float(h) / 2.0)))
-        return {"label": label, "confidence": conf, "bbox": (x1, y1, x2, y2), "centroid": (cx, cy)}
+        return {"label": label, "confidence": conf, "bbox": (x1, y1, x2, y2), "centroid": (cx, cy), "mask_polygon": None}
 
     x1 = prediction.get("x1", prediction.get("left"))
     y1 = prediction.get("y1", prediction.get("top"))
@@ -85,6 +150,7 @@ def prediction_to_overlay(prediction):
         "confidence": conf,
         "bbox": (x1, y1, x2, y2),
         "centroid": (int(round((x1 + x2) / 2.0)), int(round((y1 + y2) / 2.0))),
+        "mask_polygon": None,
     }
 
 
@@ -114,6 +180,8 @@ def draw_overlays(frame, overlays):
         label = item["label"]
         conf = item["confidence"]
         cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        if item.get("mask_polygon") is not None:
+            cv2.polylines(annotated, [item["mask_polygon"]], True, (0, 200, 255), 1)
         cv2.circle(annotated, (cx, cy), 4, (0, 0, 255), -1)
         cv2.putText(
             annotated,
