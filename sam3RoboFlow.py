@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -18,6 +19,12 @@ except ImportError as exc:
     ) from exc
 
 
+CURRENT_DIR = Path(__file__).resolve().parent
+CAMERA_DIR = CURRENT_DIR / "cameraCode"
+if str(CAMERA_DIR) not in sys.path:
+    sys.path.insert(0, str(CAMERA_DIR))
+
+
 DEFAULT_API_URL = os.getenv("ROBOFLOW_API_URL", "https://serverless.roboflow.com")
 DEFAULT_API_KEY = os.getenv("ROBOFLOW_API_KEY", "oPusoqJbAhSfo6zbicdc")
 DEFAULT_WORKSPACE = os.getenv("ROBOFLOW_WORKSPACE", "leos-workspace-qswhy")
@@ -28,6 +35,10 @@ DEFAULT_VIDEO_PATH = Path(
     "/Users/leoshaw/Documents/VSCode/VS_CMU_S26/Computer Vision Testing/IMG_1178.MOV"
 )
 DEFAULT_OUTPUT_PATH = DEFAULT_VIDEO_PATH.with_name(f"{DEFAULT_VIDEO_PATH.stem}_annotated.mp4")
+PI_CAMERA_HINTS = {
+    "arm": "usb-xhci-hcd.1-2",
+    "mount": "usb-xhci-hcd.1-1",
+}
 
 
 def build_parser():
@@ -45,6 +56,11 @@ def build_parser():
         help="Use a live webcam feed instead of a prerecorded video file.",
     )
     parser.add_argument(
+        "--pi-camera",
+        action="store_true",
+        help="Use the Pi camera path from cameraCode/takePhoto.py.",
+    )
+    parser.add_argument(
         "--camera-index",
         type=int,
         default=0,
@@ -59,6 +75,11 @@ def build_parser():
         "--output",
         default=str(DEFAULT_OUTPUT_PATH),
         help="Annotated output video path for --video.",
+    )
+    parser.add_argument(
+        "--image-output",
+        default="annotated_frame.jpg",
+        help="Annotated output image path for single-frame mode.",
     )
     parser.add_argument(
         "--output-dir",
@@ -109,6 +130,11 @@ def build_parser():
         help="Optional cap on processed frames. 0 means all frames.",
     )
     parser.add_argument(
+        "--single-frame",
+        action="store_true",
+        help="Capture and process exactly one frame, then write an annotated image.",
+    )
+    parser.add_argument(
         "--show",
         action="store_true",
         help="Display the annotated video while processing.",
@@ -147,6 +173,19 @@ def clamp_bbox(bbox, frame_shape):
     if y2 <= y1:
         y2 = min(height - 1, y1 + 1)
     return (x1, y1, x2, y2)
+
+
+def pixel_centroid_from_bbox(x1, y1, x2, y2):
+    return (int(round((x1 + x2) / 2.0)), int(round((y1 + y2) / 2.0)))
+
+
+def center_relative_centroid(pixel_centroid, frame_shape):
+    height, width = frame_shape[:2]
+    cx, cy = pixel_centroid
+    return (
+        int(round(cx - (width / 2.0))),
+        int(round((height / 2.0) - cy)),
+    )
 
 
 def create_tracker(tracker_name):
@@ -203,15 +242,14 @@ def trackers_to_overlays(frame, tracked_items):
 
         x, y, w, h = bbox
         x1, y1, x2, y2 = clamp_bbox((x, y, x + w, y + h), frame.shape)
+        pixel_centroid = pixel_centroid_from_bbox(x1, y1, x2, y2)
         overlays.append(
             {
                 "label": item["label"],
                 "confidence": item["confidence"],
                 "bbox": (x1, y1, x2, y2),
-                "centroid": (
-                    int(round((x1 + x2) / 2.0)),
-                    int(round((y1 + y2) / 2.0)),
-                ),
+                "pixel_centroid": pixel_centroid,
+                "centroid": center_relative_centroid(pixel_centroid, frame.shape),
             }
         )
         active_trackers.append(item)
@@ -274,7 +312,7 @@ def prediction_to_overlay(prediction):
             "label": label,
             "confidence": confidence,
             "bbox": (x1, y1, x2, y2),
-            "centroid": (cx, cy),
+            "pixel_centroid": (cx, cy),
         }
 
     x1 = prediction.get("x1", prediction.get("left"))
@@ -292,11 +330,11 @@ def prediction_to_overlay(prediction):
         "label": label,
         "confidence": confidence,
         "bbox": (x1, y1, x2, y2),
-        "centroid": (int(round((x1 + x2) / 2.0)), int(round((y1 + y2) / 2.0))),
+        "pixel_centroid": pixel_centroid_from_bbox(x1, y1, x2, y2),
     }
 
 
-def run_workflow(client, image_path, workspace, workflow_id, input_name, use_cache):
+def run_workflow(client, image_path, frame_shape, workspace, workflow_id, input_name, use_cache):
     result = client.run_workflow(
         workspace_name=workspace,
         workflow_id=workflow_id,
@@ -310,6 +348,9 @@ def run_workflow(client, image_path, workspace, workflow_id, input_name, use_cac
     for prediction in raw_predictions:
         parsed = prediction_to_overlay(prediction)
         if parsed is not None:
+            parsed["centroid"] = center_relative_centroid(
+                parsed["pixel_centroid"], frame_shape
+            )
             overlays.append(parsed)
     overlays.sort(key=lambda item: item["confidence"], reverse=True)
 
@@ -326,11 +367,12 @@ def draw_annotations(frame, overlays, classifications, frame_index):
     for item in overlays:
         x1, y1, x2, y2 = item["bbox"]
         cx, cy = item["centroid"]
+        pixel_cx, pixel_cy = item["pixel_centroid"]
         label = item["label"]
         confidence = item["confidence"]
 
         cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.circle(annotated, (cx, cy), 4, (0, 0, 255), -1)
+        cv2.circle(annotated, (pixel_cx, pixel_cy), 4, (0, 0, 255), -1)
         cv2.putText(
             annotated,
             f"{label} {confidence:.2f} c=({cx},{cy})",
@@ -365,7 +407,58 @@ def draw_annotations(frame, overlays, classifications, frame_index):
     return annotated
 
 
-def process_capture(client, capture, writer, args, source_label, frame_count=0, fps=30.0):
+def build_named_image_output_path(base_output_path, camera_name):
+    return base_output_path.with_name(
+        f"{base_output_path.stem}_{camera_name}{base_output_path.suffix}"
+    )
+
+
+def process_single_frame(client, frame, args, source_label):
+    output_path = Path(args.image_output).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="roboflow_frame_") as temp_dir:
+        temp_frame_path = Path(temp_dir) / "frame.jpg"
+        if not cv2.imwrite(str(temp_frame_path), frame):
+            raise RuntimeError(f"Failed to write temp frame: {temp_frame_path}")
+
+        overlays, classifications = run_workflow(
+            client=client,
+            image_path=temp_frame_path,
+            frame_shape=frame.shape,
+            workspace=args.workspace,
+            workflow_id=args.workflow_id,
+            input_name=args.input_name,
+            use_cache=args.use_cache,
+        )
+
+    annotated = draw_annotations(
+        frame=frame,
+        overlays=overlays,
+        classifications=classifications,
+        frame_index=0,
+    )
+    if not cv2.imwrite(str(output_path), annotated):
+        raise RuntimeError(f"Failed to write annotated image: {output_path}")
+
+    if args.show:
+        cv2.imshow("Roboflow Single Frame", annotated)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+    print(f"Input source: {source_label}")
+    print(f"Annotated image: {output_path}")
+    print(f"Detections={len(overlays)} classifications={len(classifications)}")
+
+    return {
+        "video_path": source_label,
+        "output_path": str(output_path),
+        "frames_written": 1,
+        "inference_calls": 1,
+    }
+
+
+def process_frames(client, frame_iterator, writer, args, source_label, frame_count=0, fps=30.0):
     inference_calls = 0
     processed_frames = 0
     last_overlays = []
@@ -383,9 +476,8 @@ def process_capture(client, capture, writer, args, source_label, frame_count=0, 
     with tempfile.TemporaryDirectory(prefix="roboflow_video_") as temp_dir:
         temp_frame_path = Path(temp_dir) / "frame.jpg"
 
-        while True:
-            ok, frame = capture.read()
-            if not ok:
+        for frame in frame_iterator:
+            if frame is None:
                 break
 
             processed_frames += 1
@@ -400,6 +492,7 @@ def process_capture(client, capture, writer, args, source_label, frame_count=0, 
                 last_overlays, last_classifications = run_workflow(
                     client=client,
                     image_path=temp_frame_path,
+                    frame_shape=frame.shape,
                     workspace=args.workspace,
                     workflow_id=args.workflow_id,
                     input_name=args.input_name,
@@ -430,16 +523,15 @@ def process_capture(client, capture, writer, args, source_label, frame_count=0, 
             if writer is not None:
                 writer.write(annotated)
 
-            if args.show or args.webcam:
+            if args.show:
                 cv2.imshow("Roboflow Video Workflow", annotated)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
                     break
 
-    capture.release()
     if writer is not None:
         writer.release()
-    if args.show or args.webcam:
+    if args.show:
         cv2.destroyAllWindows()
 
     print(
@@ -453,6 +545,24 @@ def process_capture(client, capture, writer, args, source_label, frame_count=0, 
         "frames_written": processed_frames if not args.max_frames else min(processed_frames, args.max_frames),
         "inference_calls": inference_calls,
     }
+
+
+def iter_video_capture(capture):
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            return
+        yield frame
+
+
+def iter_pi_camera_frames(camera, target_format):
+    import takePhoto
+
+    while True:
+        frame = takePhoto.takePhoto(camera, target_format, save_photo=False)
+        if frame is None:
+            continue
+        yield frame
 
 
 def process_video(client, video_path, output_path, args):
@@ -470,6 +580,13 @@ def process_video(client, video_path, output_path, args):
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
+    if args.single_frame:
+        ok, frame = capture.read()
+        capture.release()
+        if not ok or frame is None:
+            raise RuntimeError(f"Could not read first frame from video: {video_path}")
+        return process_single_frame(client, frame, args, str(video_path))
+
     writer = cv2.VideoWriter(
         str(output_path),
         cv2.VideoWriter_fourcc(*"mp4v"),
@@ -481,15 +598,17 @@ def process_video(client, video_path, output_path, args):
         raise RuntimeError(f"Could not open output video for writing: {output_path}")
 
     args.output = str(output_path)
-    return process_capture(
+    result = process_frames(
         client=client,
-        capture=capture,
+        frame_iterator=iter_video_capture(capture),
         writer=writer,
         args=args,
         source_label=str(video_path),
         frame_count=frame_count,
         fps=fps,
     )
+    capture.release()
+    return result
 
 
 def process_webcam(client, args):
@@ -498,6 +617,13 @@ def process_webcam(client, args):
         raise RuntimeError(f"Could not open webcam index {args.camera_index}")
 
     fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
+    if args.single_frame:
+        ok, frame = capture.read()
+        capture.release()
+        if not ok or frame is None:
+            raise RuntimeError(f"Could not read frame from webcam index {args.camera_index}")
+        return process_single_frame(client, frame, args, f"webcam:{args.camera_index}")
+
     if args.output:
         output_path = Path(args.output).expanduser().resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -516,15 +642,113 @@ def process_webcam(client, args):
     else:
         writer = None
 
-    return process_capture(
+    result = process_frames(
         client=client,
-        capture=capture,
+        frame_iterator=iter_video_capture(capture),
         writer=writer,
         args=args,
         source_label=f"webcam:{args.camera_index}",
         frame_count=0,
         fps=fps,
     )
+    capture.release()
+    return result
+
+
+def process_pi_camera(client, args):
+    try:
+        import takePhoto
+    except ImportError as exc:
+        raise ImportError(
+            "cameraCode/takePhoto.py dependencies are missing. Install pyvizionsdk on the Pi camera environment."
+        ) from exc
+
+    if args.single_frame:
+        output_base = Path(args.image_output).expanduser().resolve()
+        summaries = []
+        for camera_name, camera_hint in PI_CAMERA_HINTS.items():
+            camera = None
+            try:
+                camera, target_format = takePhoto.initialzeCamera(camera_hint=camera_hint)
+                frame = takePhoto.takePhoto(camera, target_format, save_photo=False)
+                if frame is None:
+                    raise RuntimeError(
+                        f"Could not capture first frame from Pi camera '{camera_name}'"
+                    )
+
+                original_image_output = args.image_output
+                args.image_output = str(
+                    build_named_image_output_path(output_base, camera_name)
+                )
+                try:
+                    summaries.append(
+                        process_single_frame(
+                            client,
+                            frame,
+                            args,
+                            f"pi-camera:{camera_name}",
+                        )
+                    )
+                finally:
+                    args.image_output = original_image_output
+            finally:
+                if camera is not None:
+                    try:
+                        takePhoto.closeCamera(camera)
+                    except Exception:
+                        pass
+
+        print("\nPi camera batch complete:")
+        for summary in summaries:
+            print(
+                f"{summary['video_path']} -> {summary['output_path']} | "
+                f"frames={summary['frames_written']} | calls={summary['inference_calls']}"
+            )
+        return summaries
+
+    camera, target_format = takePhoto.initialzeCamera()
+    writer = None
+    try:
+        first_frame = takePhoto.takePhoto(camera, target_format, save_photo=False)
+        if first_frame is None:
+            raise RuntimeError("Could not capture first frame from Pi camera")
+
+        if args.single_frame:
+            return process_single_frame(client, first_frame, args, "pi-camera")
+
+        fps = 30.0
+        if args.output:
+            output_path = Path(args.output).expanduser().resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            height, width = first_frame.shape[:2]
+            writer = cv2.VideoWriter(
+                str(output_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                fps,
+                (width, height),
+            )
+            if not writer.isOpened():
+                raise RuntimeError(f"Could not open output video for writing: {output_path}")
+            args.output = str(output_path)
+
+        def pi_frames():
+            yield first_frame
+            yield from iter_pi_camera_frames(camera, target_format)
+
+        return process_frames(
+            client=client,
+            frame_iterator=pi_frames(),
+            writer=writer,
+            args=args,
+            source_label="pi-camera",
+            frame_count=0,
+            fps=fps,
+        )
+    finally:
+        try:
+            takePhoto.closeCamera(camera)
+        except Exception:
+            pass
 
 
 def main():
@@ -535,6 +759,10 @@ def main():
         raise ValueError("--frame-step must be at least 1")
 
     client = InferenceHTTPClient(api_url=args.api_url, api_key=args.api_key)
+
+    if args.pi_camera:
+        process_pi_camera(client, args)
+        return
 
     if args.webcam:
         process_webcam(client, args)

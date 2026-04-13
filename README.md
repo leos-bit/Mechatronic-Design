@@ -94,6 +94,30 @@ Use this to verify the camera feed, classes, polygons, and centroids:
 python3 liveRoboflowView.py
 ```
 
+### Dual AR1335 single-frame capture with annotated outputs
+`sam3RoboFlow.py` supports a Pi dual-camera single-frame mode that captures both USB AR1335 cameras sequentially and writes separate annotated images:
+- `usb-xhci-hcd.1-2` -> `arm`
+- `usb-xhci-hcd.1-1` -> `mount`
+
+Run on the Pi:
+
+```bash
+python sam3RoboFlow.py \
+  --pi-camera \
+  --single-frame \
+  --image-output "/home/collector/Documents/deltaArmControl/Mechatronic-Design/pi_camera_annotated.jpg"
+```
+
+This writes:
+- `/home/collector/Documents/deltaArmControl/Mechatronic-Design/pi_camera_annotated_arm.jpg`
+- `/home/collector/Documents/deltaArmControl/Mechatronic-Design/pi_camera_annotated_mount.jpg`
+
+Copy both files to the Mac:
+
+```bash
+scp collector@172.26.241.192:/home/collector/Documents/deltaArmControl/Mechatronic-Design/pi_camera_annotated_{arm,mount}.jpg ~/Downloads/
+```
+
 ### Robotic sorting with Roboflow workflow backend
 `motorControl.py` already supports the Roboflow workflow backend. Run:
 
