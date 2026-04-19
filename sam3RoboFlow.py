@@ -182,9 +182,11 @@ def pixel_centroid_from_bbox(x1, y1, x2, y2):
 def center_relative_centroid(pixel_centroid, frame_shape):
     height, width = frame_shape[:2]
     cx, cy = pixel_centroid
+    image_x = cx - (width / 2.0)
+    image_y = cy - (height / 2.0)
     return (
-        int(round(cx - (width / 2.0))),
-        int(round((height / 2.0) - cy)),
+        int(round(image_y)),
+        int(round(-image_x)),
     )
 
 

@@ -28,13 +28,4 @@ def Stop(signum, frame):
 signal.signal(signal.SIGINT, Stop)
 
 if __name__ == '__main__':
-    while True:
-       board.bus_servo_set_position(2, [[4, 120], [3, 120], [5, 120]])
-       time.sleep(4)
-       board.bus_servo_stop([4, 5, 3])
-       time.sleep(1)
-       if not start:
-        board.bus_servo_stop([4, 5, 3])
-        time.sleep(1)
-        print('已关闭')
-        break
+    board.bus_servo_set_id(5, 2)

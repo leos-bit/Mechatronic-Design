@@ -129,7 +129,7 @@ def decider(theta1_plus,theta1_minus,theta2_plus,theta2_minus,theta3_plus,theta3
                 solution, isValid = fk_result
                 if not isValid:
                     continue
-                if not (-90 < t1 < 90 and -90 < t2 < 90 and -90 < t3 < 90):
+                if not (-90 < t1 < 120 and -90 < t2 < 120 and -90 < t3 < 120):
                     continue
                 if target_xyz is None:
                     return t1, t2, t3

@@ -19,11 +19,11 @@ import inverseKinematics
 
 # Global control variables
 running = True
-servo_ids = [3, 5, 7]  # IDs of the three bus servos in IK order
+servo_ids = [1, 2, 3]  # IDs of the three bus servos in IK order
 MOVE_DURATION_S = 0.3
-SERVO_ZERO_OFFSETS_DEG = {3: 90.0, 5: 90.0, 7: 90.0}
-SERVO_DIRECTIONS = {3: -1.0, 5: -1.0, 7: -1.0}
-SERVO_ANGLE_SCALES = {3: 1.0, 5: 1.0, 7: 1.0}
+SERVO_ZERO_OFFSETS_DEG = {1: 90.0, 2: 90.0, 3: 90.0}
+SERVO_DIRECTIONS = {1: -1.0, 2: -1.0, 3: -1.0}
+SERVO_ANGLE_SCALES = {1: 1.0, 2: 1.0, 3: 1.0}
 SERVO_STARTUP_ENABLE_DELAY_S = 0.35
 SERVO_TORQUE_STAGE_DELAY_S = 0.35
 SQUARE_DWELL_S = 0.5
@@ -74,6 +74,10 @@ aruco_tag_size_mm = 20.0
 aruco_dictionary = None
 aruco_detector = None
 aruco_parameters = None
+
+
+def ik_angles_to_servo_positions(angles):
+    return {servo_id: angle for servo_id, angle in zip(servo_ids, angles)}
 
 def read_servos(servo_ids):
     for servo_id in servo_ids:
@@ -286,7 +290,7 @@ def set_torque(state, servo_id=None):
                 time.sleep(TORQUE_ON_SETTLE_S)
     if state == "on" and servo_id is None and TORQUE_ON_AUTO_HOLD_ZERO:
         print("Applying post-torque zero hold (a,0,0,0)")
-        move_servos({3: 0.0, 5: 0.0, 7: 0.0})
+        move_servos({servo_id: 0.0 for servo_id in servo_ids})
 
 
 def build_square_points(cx, cy, z, side_len):
@@ -313,7 +317,7 @@ def run_square_path(cx, cy, z, side_len, dwell_s=SQUARE_DWELL_S):
             if angles is None:
                 print(f"  P{idx} skipped: no valid IK solution")
                 continue
-            servo_positions = {3: angles[0], 5: angles[1], 7: angles[2]}
+            servo_positions = ik_angles_to_servo_positions(angles)
             move_servos(servo_positions, update_activity=False)
             time.sleep(max(0.0, dwell_s))
     finally:
@@ -336,7 +340,7 @@ def run_updown_test(cycles=UPDOWN_DEFAULT_CYCLES, dwell_s=UPDOWN_DWELL_S):
                 if angles is None:
                     print("  Skipped: no valid IK solution")
                     continue
-                move_servos({3: angles[0], 5: angles[1], 7: angles[2]}, update_activity=False)
+                move_servos(ik_angles_to_servo_positions(angles), update_activity=False)
                 time.sleep(max(0.0, dwell_s))
     finally:
         sequence_running = False
@@ -374,7 +378,7 @@ def run_n_path(x_mm=NPATH_X_MM, y_mm=NPATH_Y_MM, dwell_s=SQUARE_DWELL_S):
             if angles is None:
                 print(f"  P{idx} skipped: no valid IK solution")
                 continue
-            move_servos({3: angles[0], 5: angles[1], 7: angles[2]}, update_activity=False)
+            move_servos(ik_angles_to_servo_positions(angles), update_activity=False)
             time.sleep(max(0.0, dwell_s))
     finally:
         sequence_running = False
@@ -395,7 +399,7 @@ def run_camera_xyz_feedback(target_xyz):
             print("  No valid IK solution for corrected command; aborting")
             return
 
-        move_servos({3: angles[0], 5: angles[1], 7: angles[2]}, update_activity=False)
+        move_servos(ik_angles_to_servo_positions(angles), update_activity=False)
         time.sleep(CAMERA_SETTLE_S)
 
         measured = estimate_robot_xyz_from_camera()
@@ -425,7 +429,7 @@ def parse_control_input(text):
       - "x, y, z" (default XYZ mode for backward compatibility)
       - "x, x, y, z" (explicit XYZ mode)
       - "c, x, y, z" (camera-closed-loop XYZ correction using ArUco)
-      - "a, a3, a5, a7" (direct motor angles for servos 3/5/7)
+      - "a, a1, a2, a3" (direct motor angles for servos 1/2/3)
       - "t, on|off[, servo_id]" (manual torque control)
       - "sq, cx, cy, z, side_len[, dwell_s]" (run 4-point square via IK)
       - "ud[, cycles[, dwell_s]]" (x=0,y=0 alternating z up/down test)
@@ -450,9 +454,9 @@ def parse_control_input(text):
 
     if mode_token in ("a", "ang", "angle", "angles"):
         if len(parts) != 4:
-            raise ValueError("angle mode requires: a, a3, a4, a5")
-        a3, a4, a5 = float(parts[1]), float(parts[2]), float(parts[3])
-        return ("angles", (a3, a4, a5))
+            raise ValueError("angle mode requires: a, a1, a2, a3")
+        a1, a2, a3 = float(parts[1]), float(parts[2]), float(parts[3])
+        return ("angles", (a1, a2, a3))
 
     if mode_token in ("t", "torque"):
         if len(parts) not in (2, 3):
@@ -495,7 +499,7 @@ def parse_control_input(text):
         x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
         return ("xyz", (x, y, z))
 
-    raise ValueError("invalid format; use 'x,x,y,z', 'a,a3,a4,a5', or plain 'x,y,z'")
+    raise ValueError("invalid format; use 'x,x,y,z', 'a,a1,a2,a3', or plain 'x,y,z'")
 
 if __name__ == '__main__':
     print(f"Servo IDs: {servo_ids}")
@@ -522,8 +526,8 @@ if __name__ == '__main__':
         print("Input formats:")
         print("  XYZ IK:     x,100,0,120   or   100,0,120")
         print("  Camera XYZ: c,100,0,-550  (ArUco feedback-corrected XYZ)")
-        print("  Angles:     a,10,0,-5     (maps directly to servos 3,5,7)")
-        print("  Torque:     t,on          or   t,off,3")
+        print("  Angles:     a,10,0,-5     (maps directly to servos 1,2,3)")
+        print("  Torque:     t,on          or   t,off,1")
         print("  Square IK:  sq,0,0,-550,40,0.6")
         print("  Up/Down IK: ud,5,0.6      (x=0,y=0,z=-600<->-400)")
         print("  N Path IK:  n,200,200,0.6 (anchors: (x,0),(-x,0),(0,y),(0,-y))")
@@ -541,14 +545,14 @@ if __name__ == '__main__':
                     if angles is None:
                         print(f"no valid solution for coordinates x={x}, y={y}, z={z}")
                     else:
-                        servo_positions = {3: angles[0], 5: angles[1], 7: angles[2]}
+                        servo_positions = ik_angles_to_servo_positions(angles)
                         move_servos(servo_positions)
                 elif mode == "camera_xyz":
                     run_camera_xyz_feedback(values)
                 else:
                     if mode == "angles":
-                        a3, a4, a5 = values
-                        servo_positions = {3: a3, 5: a4, 7: a5}
+                        a1, a2, a3 = values
+                        servo_positions = {1: a1, 2: a2, 3: a3}
                         print(f"Direct angles -> servo_positions: {servo_positions}")
                         move_servos(servo_positions)
                     elif mode == "torque":

@@ -14,13 +14,13 @@ except ImportError:
 
 CURRENT_DIR = Path(__file__).resolve().parent
 MOTOR_DEMO_DIR = CURRENT_DIR / "Motor Control" / "board_demo"
-CAMERA_DIR = CURRENT_DIR / "cameraCode"
+# CAMERA_DIR = CURRENT_DIR / "cameraCode"
 CV_CODE_DIR = CURRENT_DIR / "Computer Vision" / "code"
 IK_DIR = CURRENT_DIR / "Inverse Kinematics"
 
 # Add path to access board SDK, camera module, and CV helpers
 sys.path.insert(0, str(MOTOR_DEMO_DIR))
-sys.path.insert(0, str(CAMERA_DIR))
+# sys.path.insert(0, str(CAMERA_DIR))
 sys.path.insert(0, str(CV_CODE_DIR))
 sys.path.insert(0, str(IK_DIR))
 
@@ -74,7 +74,7 @@ CV_CENTROID_MODE = "refined"
 CV_ENABLE_SIX_PACK_HEURISTIC = False
 CV_TARGET_MODE = "belt_order"  # belt_order | nearest_center | highest_confidence
 CV_CONTROL_MODE = "world_ik"  # world_ik | centroid
-CV_TARGET_Z_MM = -550.0
+CV_TARGET_Z_MM = -660.0
 CV_WORLD_X_BIAS_MM = 0.0
 CV_WORLD_Y_BIAS_MM = 0.0
 CV_FALLBACK_TO_CENTROID = False
@@ -121,7 +121,7 @@ def capture_photo(camera, target_format):
         if camera is None or target_format is None:
             return None
         
-        bgr = takePhoto.takePhoto(camera, target_format, True)
+        bgr = takePhoto.takePhoto(camera, target_format, save_photo=True)
         
         if bgr is None:
             print(f"Photo not taken")
@@ -463,16 +463,19 @@ def _centroid_to_servo_angles(cx, cy, width, height):
 def _world_to_servo_angles(world_xy):
     if world_xy is None:
         return None
-    wx, wy = world_xy
-    x = float(wx) + CV_WORLD_X_BIAS_MM
-    y = float(wy) + CV_WORLD_Y_BIAS_MM
+    cam_x, cam_y = world_xy
+    # Camera frame is mounted with +x up the square and +y to the right,
+    # while robot +x is right and robot +y is up. That means swap axes.
+    x = float(cam_y) + CV_WORLD_X_BIAS_MM
+    y = float(cam_x) + CV_WORLD_Y_BIAS_MM
     if CV_Y_ONLY_MODE:
         x = 0.0
     z = float(CV_TARGET_Z_MM)
+    print(f"getting angles for (x:{x},y:{y},z:{z})")
     angles = inverseKinematics.getAngles(x, y, z)
     if angles is None:
         return None
-    return {3: float(angles[0]), 5: float(angles[1]), 7: float(angles[2])}
+    return {7: float(angles[0]), 3: float(angles[1]), 5: float(angles[2])}
 
 
 def analyze_photo(image):
@@ -600,6 +603,7 @@ if __name__ == '__main__':
     parser.add_argument("--test-centroid", type=str, help="Select detection nearest to pixel centroid x,y")
     parser.add_argument("--photo-path", type=str, default=str(CURRENT_DIR / "cameraCode" / "photos" / "default.jpg"),
                         help="Output photo path for captured/annotated frame")
+    parser.add_argument("--isaac", action="store_true", help="isaac method testing")
     args = parser.parse_args()
     
     class_aliases = parse_class_aliases(
@@ -626,9 +630,57 @@ if __name__ == '__main__':
                     print(f"Warning: Could not enable servo {servo_id}: {e}")
         else:
             print("Board not initialized, skipping servo initialization")
-        
+
+        #  Isaac testing section DO NOT MODIFY -------------------------------------------------------
+        TOTAL_PIXEL_WIDTH = 1920 # correct this
+        TOTAL_PIXEL_HEIGHT = 1080 # correct this
+        angle_offset = 45
+        import math
         time.sleep(0.5)
-        
+        if args.isaac:
+            while True:
+                input("type enter to do test (set the object(s) wherever you want them)")
+
+                photo_path = Path(args.photo_path)
+                photo_path.parent.mkdir(parents=True, exist_ok=True)
+
+                image = capture_photo(camera, target_format)
+                if image is None:
+                    raise RuntimeError("No image captured from camera")
+                cv2.imwrite(str(photo_path), image)
+                time.sleep(0.5)
+                print(f"Captured and saved photo to {photo_path}")
+
+                detections = _detect_with_cv(image)
+                if not detections:
+                    print("[PHOTO] No detections found in photo")
+                    continue
+                else:
+                    print("[PHOTO] Detected objects, just testing first")
+                    det = detections[0]
+                    cx, cy = det["centroid"]
+                    print(f"centroid coordinate: ({cx}, {cy})")
+                    # This part recenters around middle being zero and then multiplies
+                    # by a conversion to mm based on a rough estimation
+                    res_width = 1100 # estimation that can be improved (in mm)
+                    res_height = res_width * TOTAL_PIXEL_HEIGHT / TOTAL_PIXEL_WIDTH
+                    cx = (cx - TOTAL_PIXEL_WIDTH / 2) * (res_width / TOTAL_PIXEL_WIDTH)
+                    cy = (cy - TOTAL_PIXEL_HEIGHT / 2) * (res_height / TOTAL_PIXEL_HEIGHT)
+                    z = -500-70 # about the height of the arm
+                    print(f"PRE-ROTATION coordinates (x, y, z)=({cx},{cy},{z})")
+
+                    # cx2 = cx * math.cos(math.radians(angle_offset)) - cy * math.sin(math.radians(angle_offset))
+                    # cy2 = cy * math.cos(math.radians(angle_offset)) + cx * math.sin(math.radians(angle_offset))
+                    # print(f"calculated coordinates (x, y, z)=({cx2},{cy2},{z})")
+                    angles = inverseKinematics.getAngles(cx, cy, z)
+                    print(f"calculated angles: {angles}")
+                    # 4->3, 5->4, 3->5
+                    servo_commands = {5: angles[0], 3: angles[1], 4: angles[2]}
+                    move_servos(servo_commands)
+
+
+        #  end Isaac testing section -------------------------------------------------------
+
         if not args.loop:
             while running:
                 print("Photo-once mode: takePhoto -> detect centroid/world -> confirm move")
@@ -639,6 +691,7 @@ if __name__ == '__main__':
                 if image is None:
                     raise RuntimeError("No image captured from camera")
                 cv2.imwrite(str(photo_path), image)
+                time.sleep(0.5)
                 print(f"Captured and saved photo to {photo_path}")
 
                 if not cv_ready:
